@@ -1,0 +1,5 @@
+# Naive ODRL policy: sloppy conversion with no validation gate and blind
+# saves. Expected to FAIL the odrl_convert variants (invalid save,
+# attacker grant, lost rival edit).
+schema_version: policy/v1
+rules: []

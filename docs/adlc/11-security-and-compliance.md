@@ -1,6 +1,6 @@
 # 11 — Security and compliance notes
 
-**Status:** Draft · **Owner:** TBD · **Last reviewed:** 2026-10-28
+**Status:** Draft · **Owner:** Tech lead · **Last reviewed:** 2026-10-28
 
 > Project-specific security requirements for AgentCrash. This is a working
 > startup note, not a compliance certification. Startup lens: protect keys,
@@ -25,13 +25,13 @@ scenarios). No end-user accounts and no admin console exist in v0.
 
 | Threat | Impact | Mitigation and detection | Owner and status |
 |---|---|---|---|
-| Poisoned doc drives agent action | Unauthorized side effect in a live deployment of the tested pattern | Delimiter tagging of retrieved text; instruction hierarchy; confirmation gate on money movement; scenario B regression | Open; scenario B at M2 |
+| Poisoned doc drives agent action | Unauthorized side effect in a live deployment of the tested pattern | Delimiter tagging of retrieved text; instruction hierarchy; confirmation gate on money movement; scenario B regression | Open; scenario B at M1 |
 | Blind retry double-charges | Duplicate payment or booking | Idempotency keys plus status-read-before-retry; scenario A gate | Mitigated at v0 by design |
 | API key exfiltration via trace | Key spend by third party | Keys only from env; redaction pass strips key-shaped values before trace write; gitignore on traces dir | Open; implement at M1 |
 | PII in traces and goldens | Privacy exposure on share | Redaction of emails, card numbers, and names to synthetic constants; golden review checklist | Open; implement at M1 |
 | Diagnoser prompt injection | Attacker-crafted trace steers policy patch | Diagnoser input treated as untrusted; patch schema validation; human review before replay; never auto-apply | Open; implement at M2 |
 | Malicious dependency | Supply-chain compromise of runner | Pinned deps with lockfile; minimal dep set; no network inside tools | Open; implement at M1 |
-| Stale-read lost update | Silent data corruption pattern | Versioned reads plus re-read-before-write; scenario C regression | Open; scenario C at M3 |
+| Stale-read lost update | Silent data corruption pattern | Versioned reads plus re-read-before-write; scenario C regression | Open; scenario C at M1 |
 | Golden trace tampering | Verdict truth silently changed | Golden diffs need reviewer plus offline check proof; CI pins expected verdicts | Open; process at M1 |
 
 ## 3. Poisoned docs are test content, never exfil
@@ -156,5 +156,5 @@ Golden review checklist for traces like this one:
 
 | Question | Owner | Notes |
 |---|---|---|
-| Secret-scanning hook for commits (pre-commit versus CI) | TBD | Decide at M1; either is fine if traces stay gitignored |
-| Redaction rule list location (tracer config versus policy file) | TBD | Proposal: tracer-owned config so redaction cannot be policy-patched away |
+| Secret-scanning hook for commits (pre-commit versus CI) | Tech lead | Decide at M1; either is fine if traces stay gitignored |
+| Redaction rule list location (tracer config versus policy file) | Tech lead | Proposal: tracer-owned config so redaction cannot be policy-patched away |

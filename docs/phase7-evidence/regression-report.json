@@ -1,0 +1,50 @@
+{
+  "adapter": "fake (offline, fixture-backed; no model key)",
+  "generated": "2026-10-29-phase7",
+  "golden_checks": [
+    {
+      "expected": "FAIL (exactly_once_mutation)",
+      "state": "traces/golden/timeout_retry-seed42.state.json",
+      "trace": "traces/golden/timeout_retry-seed42.jsonl",
+      "verdict": "FAIL"
+    },
+    {
+      "expected": "PASS",
+      "state": "traces/golden/timeout_retry-fixed-seed42.state.json",
+      "trace": "traces/golden/timeout_retry-fixed-seed42.jsonl",
+      "verdict": "PASS"
+    },
+    {
+      "expected": "PASS",
+      "state": "traces/golden/timeout_retry-fixed-seed43.state.json",
+      "trace": "traces/golden/timeout_retry-fixed-seed43.jsonl",
+      "verdict": "PASS"
+    },
+    {
+      "expected": "FAIL (task_completion)",
+      "state": "traces/golden/timeout_retry-giveup-seed44.state.json",
+      "trace": "traces/golden/timeout_retry-giveup-seed44.jsonl",
+      "verdict": "FAIL"
+    }
+  ],
+  "replay": {
+    "broken": [],
+    "fixed": ["exactly_once_mutation"],
+    "golden": {
+      "cases": [
+        {"trace": "timeout_retry-fixed-seed42.jsonl", "verdict": "PASS"},
+        {"trace": "timeout_retry-fixed-seed43.jsonl", "verdict": "PASS"},
+        {"trace": "timeout_retry-giveup-seed44.jsonl", "verdict": "PASS"},
+        {"trace": "timeout_retry-seed42.jsonl", "verdict": "PASS"}
+      ],
+      "passed": 4,
+      "total": 4
+    },
+    "patch": "diagnose reference patch (check_then_act + idempotency key)",
+    "replay_id": "85ca5aa0453a94b2",
+    "scenario": "payment_gateway_timeout",
+    "seed": 42,
+    "source_run_id": "43e3064f37f779fe",
+    "verdict": "PASS"
+  }
+}

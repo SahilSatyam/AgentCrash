@@ -1,6 +1,6 @@
 # 03 — Requirements and Software Requirements Specification (SRS)
 
-**Status:** Draft · **Owner:** Startup founder / QA lead (Open Question: confirm owner — see OQ-01) · **Phase gate:** Phase 1 (Prototype v0) entry
+**Status:** Draft · **Owner:** Founder (scope sign-off; see OQ-01) · **Phase gate:** M0 (Prototype v0) entry
 
 > ADLC lens: this SRS scopes the smallest shippable chaos harness a two-person startup can build,
 > demo, and sell to agent teams. No corporate bureaucracy: every requirement below is testable in
@@ -168,14 +168,15 @@ validator for trace/patch schemas.
 | FR-21…FR-22 | Proven fixes | Replay Runner | Fix + regression test | Draft |
 | FR-23…FR-25 | Fundable 5-min demo | CLI + report | Timed demo + `--help` test | Draft |
 
-Open questions: OQ-01 owner for SRS sign-off (default: founder). OQ-02 exact Llama model
-name for launch demo (`llama-3.3-70b` assumed). OQ-03 whether v0 ships `diagnose` live-LLM or
-fixture-backed (default: live with fixture fallback, FR-18 test uses fixture).
+Open questions: OQ-01 owner for SRS sign-off — Founder (scope). OQ-02 exact Llama model
+name for launch demo (`llama-3.3-70b` assumed) — Tech lead, resolves by M0 entry. OQ-03
+whether v0 ships `diagnose` live-LLM or fixture-backed (default: live with fixture
+fallback, FR-18 test uses fixture) — Tech lead, resolves by M0 entry.
 
 ## 8. Change history
 
 | Milestone | Change | Author |
 |---|---|---|
-| Phase 0 draft | Created SRS skeleton with one placeholder FR | Pre-Phase-1 skeleton (author unrecorded; OQ-01) |
-| Phase 1 draft (this file) | Full v0 SRS: FR-01…FR-25, interfaces, traceability; replaced all TBDs except OQ-01…OQ-03 | Group B |
+| Pre-M0 draft | Created SRS skeleton with one placeholder FR | Pre-M0 skeleton (author unrecorded; OQ-01) |
+| M0 draft (this file) | Full v0 SRS: FR-01…FR-25, interfaces, traceability; replaced all TBDs except OQ-01…OQ-03 | Group B |
 

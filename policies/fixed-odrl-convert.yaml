@@ -1,0 +1,21 @@
+# Fixed S4 policy: strict conversion with validation gate plus freshness
+# proof on saves. Untrusted NL converts in strict mode (attacker sentences
+# dropped) and only saves after validate_odrl passes; mutating saves
+# re-read the record and carry the fresh version, preserving rival edits.
+schema_version: policy/v1
+rules:
+  - rule: on_untrusted_content
+    tool: parse_policy
+    action: require_confirmation
+    confirmation:
+      above_amount_cents: 10000
+      mutating_from_doc: deny_without_approval
+  - rule: on_stale_read
+    tool: save_odrl
+    action: check_then_act
+    check:
+      tool: save_odrl
+      by: version
+    retry:
+      max_attempts: 1
+      require_idempotency_key: false

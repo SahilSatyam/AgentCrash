@@ -1,6 +1,6 @@
 # 12 — Non-Functional Requirements (NFRs)
 
-**Status:** Draft · **Owner:** Startup founder (Open Question OQ-01 in [03](03-requirements-and-srs.md): confirm owner) · **Phase gate:** Phase 1 (Prototype v0) entry
+**Status:** Draft · **Owner:** Founder (scope; OQ-01 in [03](03-requirements-and-srs.md) resolved: Founder) · **Phase gate:** M0 (Prototype v0) entry
 
 > ADLC lens: these targets keep a laptop-run startup prototype honest — reproducibility first
 > (a chaos harness that flakes is worthless), tiny budgets (no infra spend before traction),
@@ -150,6 +150,6 @@ run under budget. If a future phase adds token-level thought logging, this table
 
 | Milestone | Change | Author |
 |---|---|---|
-| Phase 0 draft | NFR skeleton with placeholder targets | Pre-Phase-1 skeleton (author unrecorded; OQ-01) |
-| Phase 1 draft (this file) | Full NFR set DET/PERF/REL/PORT/OBS/USE/MNT/SEC with metric + target + verification; all TBDs replaced except owner | Group B |
+| Pre-M0 draft | NFR skeleton with placeholder targets | Pre-M0 skeleton (author unrecorded; OQ-01) |
+| M0 draft (this file) | Full NFR set DET/PERF/REL/PORT/OBS/USE/MNT/SEC with metric + target + verification; all TBDs replaced | Group B |
 

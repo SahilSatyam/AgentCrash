@@ -1,6 +1,6 @@
 # 13 — Contributing and ADLC Workflow
 
-**Status:** Approved · **Owner:** Tech lead · **Milestone:** M1 Foundations
+**Status:** Approved · **Owner:** Tech lead · **Milestone:** M0 Baseline
 **Lens:** ADLC (AI/Agentic Development Lifecycle) for a startup idea — problem, users,
 MVP, risks, costs; no corporate bureaucracy, no day-wise timelines.
 
@@ -10,8 +10,8 @@ MVP, risks, costs; no corporate bureaucracy, no day-wise timelines.
    benchmark number — never a bare assertion.
 2. Determinism first. Anything that affects a verdict (verifiers, clocks, seeds) must be
    reproducible from checked-in inputs.
-3. Small slices, gated by milestones. Work lands per milestone (M1–M4); nothing is
-   scheduled by calendar day.
+3. Small slices, gated by milestones. Work lands per milestone (M0–M3, per ADR-006);
+   nothing is scheduled by calendar day.
 4. The model proposes, code disposes. LLM-generated diagnoses and patches are always
    validated by deterministic checks before they count.
 5. Startup frugality. Prefer the smallest change that closes the loop; track compute
@@ -36,7 +36,7 @@ delete after merge.
 
 Format: `type(scope): short imperative summary`, e.g. `feat(tracer): validate event
 schema at write time`. Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`.
-Every commit that changes behavior must reference the milestone: `Refs: M2`.
+Every commit that changes behavior must reference the milestone: `Refs: M0`.
 
 ### Pull request process
 
@@ -54,7 +54,7 @@ PR template:
 ```markdown
 ## Goal (one paragraph)
 
-## Milestone: M1 | M2 | M3 | M4
+## Milestone: M0 | M1 | M2 | M3
 
 ## Changes
 
@@ -72,10 +72,10 @@ There are no day-wise estimates anywhere in planning or reporting.
 
 | Milestone | Goal | Exit gate (all must hold) |
 |---|---|---|
-| M1 Foundations | Repo, harness skeleton, ADR-001–003, trace schema v1 | `run` emits valid JSONL for the happy path; schema validator passes; docs 01–08 approved |
-| M2 Prototype Slice | Full timeout exactly-once loop | `run → check → diagnose → replay` green on invoice #9821; double-charge detected pre-fix; no double-charge post-fix; docs 09–14 approved |
-| M3 Scenario Expansion | Poisoned-doc + stale-read scenarios | New verifiers with positive/negative fixtures; regression suite green; ADR-006+ recorded |
-| M4 Hardening + Demo | Reliable public demo | Wall-clock soak parity report; runbook demo executed twice without intervention; cost sheet published |
+| M0 Prototype | Repo, harness skeleton, full timeout exactly-once loop | `run → check → diagnose → replay` green on invoice #9821; double-charge detected pre-fix; no double-charge post-fix; docs 01–08 approved |
+| M1 Scenario Expansion | Poisoned-doc + stale-read scenarios | New verifiers with positive/negative fixtures; S2/S3 diagnoser coverage; docs 09–14 approved |
+| M2 Review + Regression | Reliable fixes that stay fixed | Policy-diff review rendering; regression suite green on every policy change |
+| M3 Hardening + Demo | Reliable public demo | Multi-model comparison table; shippable package; runbook demo executed twice without intervention; cost sheet published |
 
 Change control inside a milestone: scope changes need owner approval in the PR or the
 roadmap doc (15); ADR changes follow Section 6.
@@ -140,7 +140,7 @@ A task is done only when all of these hold:
 
 ## 8. Release and versioning
 
-- Versioning: SemVer (`v0.1.0`, `v0.2.0`, …). Prototype stays `0.x` until M4 exit.
+- Versioning: SemVer (`v0.1.0`, `v0.2.0`, …). Prototype stays `0.x` until M3 exit.
 - Each release tags `main`, updates doc 15 changelog, and attaches: (a) the regression
   suite report, (b) the demo trace bundle, (c) the cost sheet (model calls, tokens,
   CI minutes for the milestone).
@@ -152,8 +152,8 @@ A task is done only when all of these hold:
 
 ```bash
 # inside WSL, repo root /home/sahil/AgentCrash
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
 ruff check . && black --check . && pytest -q
 python -m agentcrash run --scenario timeout_retry --model fake
 python -m agentcrash check --trace traces/latest.jsonl

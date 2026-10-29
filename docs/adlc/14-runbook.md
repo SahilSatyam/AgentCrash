@@ -1,6 +1,6 @@
 # 14 — Runbook (Demo-Day + Operator Guide)
 
-**Status:** Approved · **Owner:** Tech lead (demo captain) · **Milestone:** M2 Prototype Slice
+**Status:** Approved · **Owner:** Tech lead (demo captain) · **Milestone:** M0 Prototype
 **Lens:** ADLC startup runbook — one page to prepare, one loop to demo, one table to
 survive surprises. No day-wise timeline; readiness is gated by rehearsal count.
 
@@ -23,9 +23,9 @@ survive surprises. No day-wise timeline; readiness is gated by rehearsal count.
 # 1. Enter WSL and the repo
 wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/sahil/AgentCrash && pwd'
 
-# 2. Environment (inside WSL)
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+# 2. Environment (inside WSL; uv-managed venv)
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
 
 # 3. Model credentials (live demo only; fakes need nothing)
 export LLAMA_API_KEY="..." LLAMA_BASE_URL="https://api.llama.example/v1"
@@ -110,6 +110,50 @@ If replay reports `FIX REJECTED` (still failing) or a regression, say so plainly
 the trace, and fall back to the pre-recorded golden trace (§7). Never re-run diagnose
 in a loop on stage — one attempt, then the golden backup.
 
+## 5B. Journey 5 — ODRL convert encore (S4 dry run, no model key)
+
+The S4 encore reuses the same loop for a model-free policy conversion:
+the scripted converter runs `parse_policy → validate_odrl → save_odrl`
+into a versioned store, and `--model` is ignored (fake adapter, offline).
+Unaided dry run — all three fault variants, nothing written:
+
+```bash
+# Step J5-1 — Dry-run the clean variant (sloppy parse, invalid ODRL saved)
+python -m agentcrash run --scenario odrl_convert --dry-run
+# Expect: tools parse_policy, validate_odrl, save_odrl; faults: [];
+#         "--model llama-3.3-70b ignored for odrl_convert (scripted converter)"
+
+# Step J5-2 — Dry-run the poisoned-sentence variant (attacker grant planted)
+python -m agentcrash run --scenario odrl_convert_poisoned --dry-run
+# Expect: faults list the inert poisoned_doc entry for parse_policy
+
+# Step J5-3 — Dry-run the concurrent-edit variant (rival writer at step 4)
+python -m agentcrash run --scenario odrl_convert_concurrent --dry-run
+# Expect: faults list the concurrent_update entry on save_odrl at step 4
+```
+
+Live encore (still no key — the converter never calls a model):
+
+```bash
+# Step J5-4 — Run clean pre-fix, then grade it
+python -m agentcrash run --scenario odrl_convert --seed 42
+python -m agentcrash check --trace traces/<run_id>.jsonl
+# Expect: [FAIL] odrl_valid (permission[0] is missing required 'target');
+#         the other three S4 verifiers PASS
+
+# Step J5-5 — Diagnose and replay with the fixed converter policy
+python -m agentcrash diagnose --trace traces/<run_id>.jsonl --output s4-patch.json
+python -m agentcrash replay --trace traces/<run_id>.jsonl \
+  --policy policies/fixed-odrl-convert.yaml
+# Expect: fix: VERIFIED (all four S4 verifiers PASS)
+```
+
+Pinned goldens for all three variants (naive FAIL + fixed PASS at seed 42)
+live in `tests/corpus/s4-*-seed42.jsonl` with labels in
+`tests/corpus/labels.yaml`. They are deliberately NOT in `traces/golden/`:
+that directory is replay's live `--regression` input, and pre-fix S4 traces
+re-run under non-S4 policies would red-flag the S1–S3 regression gates.
+
 ## 6. Collect traces (evidence discipline)
 
 ```bash
@@ -179,6 +223,6 @@ silently misapplied.
 | Backend engineer | Harness, tracer, replay correctness | Nondeterministic verdicts or schema errors |
 | Product lead | Story, costs, follow-up issues | Budget overrun or scope question from the audience |
 
-**Open Question (owner: tech lead, resolves by M4):** hosted shareable demo vs. local
+**Open Question (owner: tech lead, resolves by M3):** hosted shareable demo vs. local
 laptop demo — if hosted, this runbook gains a deploy/rollback section for the demo
 instance; until then, local-only is the supported path.

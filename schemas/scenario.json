@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "scenario",
+  "description": "Chaos experiment declaration (scenario/v1, doc 06 S3)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "scenario",
+    "task",
+    "seed",
+    "tools",
+    "faults",
+    "invariants",
+    "policy"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "scenario/v1"},
+    "scenario": {"type": "string"},
+    "task": {"type": "string"},
+    "seed": {"type": "integer"},
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "latency_ms", "timeout_ms", "mutating"],
+        "properties": {
+          "name": {"type": "string"},
+          "latency_ms": {"type": "integer", "minimum": 0},
+          "timeout_ms": {"type": "integer", "minimum": 0},
+          "mutating": {"type": "boolean"},
+          "idempotency_key_arg": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "faults": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["at_step", "kind", "params"],
+        "properties": {
+          "at_step": {"type": ["integer", "null"], "minimum": 1},
+          "kind": {
+            "type": "string",
+            "enum": [
+              "timeout_after_commit",
+              "timeout_before_commit",
+              "poisoned_doc",
+              "concurrent_update"
+            ]
+          },
+          "params": {"type": "object"}
+        }
+      }
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "check", "description"],
+        "properties": {
+          "id": {"type": "string"},
+          "check": {"type": "string"},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "policy": {"type": "string"},
+    "max_steps": {"type": "integer", "minimum": 1}
+  }
+}

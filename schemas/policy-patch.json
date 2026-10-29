@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "policy-patch",
+  "description": "Diagnoser-proposed policy diff (policy_patch/v1, doc 06 S4)",
+  "type": "object",
+  "required": ["schema_version", "source_run_id", "rationale", "patch"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "policy_patch/v1"},
+    "source_run_id": {"type": "string"},
+    "rationale": {"type": "string"},
+    "patch": {"type": "object"}
+  }
+}
