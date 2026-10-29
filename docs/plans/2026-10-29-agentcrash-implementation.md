@@ -1,14 +1,14 @@
 # AgentCrash — Phase-Wise Implementation Plan
 
-- **Status:** Draft (awaiting approval; do not implement until `go`)
+- **Status:** Phase 0 done on branch `chore/phase-0-baseline` (review pending); Phases 1+ await `go`
 - **Owner:** Founder / tech lead
 - **Repo:** `/home/sahil/AgentCrash` (git, origin `github.com/SahilSatyam/AgentCrash.git`)
-- **Docs basis:** `docs/adlc/` 16-doc set (working tree) + `_staging_adlc/` S4/v0.2.1 + AgentODRL for S4 pin
+- **Docs basis:** `docs/adlc/` 16-doc set (working tree) + AgentODRL for S4 pin (`_staging_adlc/` S4/v0.2.1 assumed at planning time is absent — see ADR-007)
 - **Milestone scheme:** M0–M3 per staging doc 15 (see F.1 — must be applied repo-wide in Phase 0)
 
 ## A. Executive Summary
 
-AgentCrash is chaos engineering for tool-using agents (Run → Inject → Trace → Check → Diagnose & Replay), with the hard rule that deterministic verifiers own verdicts and the LLM only proposes policy diffs. The 16 lifecycle docs specify architecture, schemas, CLI flags, exit codes, module boundaries, and test gates in unusual detail. Current state is **zero implementation**: no `src/`, tests, packaging, or CI. The strategy is to freeze doc contradictions first (one ADR + anchor table), then build one vertical slice at a time — tracer/schemas → tools/injector/stub-run → verifiers/check → policy/diagnose/replay → S2/S3 → S4 → packaging/demo — with cheap deterministic gates running before any model spend.
+AgentCrash is chaos engineering for tool-using agents (Run → Inject → Trace → Check → Diagnose & Replay), with the hard rule that deterministic verifiers own verdicts and the LLM only proposes policy diffs. The 16 lifecycle docs specify architecture, schemas, CLI flags, exit codes, module boundaries, and test gates in unusual detail. Current state is **skeleton only** (Phase 0, on branch `chore/phase-0-baseline`): empty `src/` package, smoke test, packaging, and CI — no behavior code yet. The strategy is to freeze doc contradictions first (one ADR + anchor table), then build one vertical slice at a time — tracer/schemas → tools/injector/stub-run → verifiers/check → policy/diagnose/replay → S2/S3 → S4 → packaging/demo — with cheap deterministic gates running before any model spend.
 
 Priority key used below: **P0** = critical for the core loop and submission; **P1** = required for reliability, suite depth, or demo differentiation; **P2** = deferrable enhancement.
 
@@ -61,7 +61,7 @@ scenario.yaml + policy.yaml
 
 ## D. Requirements Traceability and Gap Analysis
 
-Status today: everything below is **missing** (no `src/`, `tests/`, `schemas/`, `scenarios/`, `policies/`, packaging, CI).
+Status today: all behavior below is **missing** (Phase 0 landed the empty `src/`/`tests/` skeleton, packaging, and CI only — no `schemas/`, `scenarios/`, `policies/`, or harness logic yet).
 
 - [ ] FR-01–FR-04 run/seed/stub/max-steps (03 §2.1) → verify: `pytest tests/test_run.py` + golden byte-diff (normalized)
 - [ ] FR-05–FR-08 injection determinism/refusal (03 §2.2) → verify: seed-matrix rerun diff; `alien_fault` refusal test
@@ -87,27 +87,27 @@ Scope: docs + ADR-006 + empty-but-green repo skeleton. No behavior code.
 
 Tasks:
 
-- [ ] Port `_staging_adlc` 01/02/15 S4 + v0.2.1 content into `docs/adlc/`; add S4 spec stubs to 03/06/07/10 (or ADR-007)
-- [ ] Record ADR-006: M0–M3 scheme repo-wide; frozen anchor table (threshold 1500ms, fault latency 2000ms, seed 42, tick 50ms); 06 §5 canonical schema; run_id normalization rule for golden diffs
-- [ ] Fix README + 10-A anchors to ADR-006 values; assign all TBD OQ owners (founder = scope, tech lead = technical)
-- [ ] Scaffold `pyproject.toml` (`agentcrash` console script, `[dev]` extras), lockfile, pytest/ruff/black config, `.gitignore` (`traces/*` except goldens, `.venv/`), empty package skeleton
-- [ ] Verify `github.com/SahilSatyam/AgentCrash.git` is public and README quickstart works; back up `_staging_adlc` until ported
+- [x] Port `_staging_adlc` 01/02/15 S4 + v0.2.1 content into `docs/adlc/`; add S4 spec stubs to 03/06/07/10 (or ADR-007) — done as no-op: staging tree is absent from tree and history, so ADR-007 records the gap and defers S4 stubs until sourced (no specs invented)
+- [x] Record ADR-006: M0–M3 scheme repo-wide; frozen anchor table (threshold 1500ms, fault latency 2000ms, seed 42, tick 50ms); 06 §5 canonical schema; run_id normalization rule for golden diffs — done (plus ADR-007)
+- [x] Fix README + 10-A anchors to ADR-006 values; assign all TBD OQ owners (founder = scope, tech lead = technical) — done (adlc README, docs 03/04/09/10/11/12/13/14)
+- [x] Scaffold `pyproject.toml` (`agentcrash` console script, `[dev]` extras), lockfile, pytest/ruff/black config, `.gitignore` (`traces/*` except goldens, `.venv/`), empty package skeleton — done
+- [ ] Verify `github.com/SahilSatyam/AgentCrash.git` is public and README quickstart works; back up `_staging_adlc` until ported — public verified; backup n/a (staging absent); fresh-machine quickstart check still open (→ M0)
 
 Dependencies: this plan's approval. Nothing else.
 
 Deliverables:
 
-- [ ] Committed `docs/adlc/` (filled set + ADR-006) and green empty CI (lint + format + empty pytest)
+- [x] Committed `docs/adlc/` (filled set + ADR-006) and green empty CI (lint + format + empty pytest) — committed on branch `chore/phase-0-baseline` (merge pending review); gates observed green locally, GitHub Actions runs on push
 
 Acceptance / testing:
 
-- [ ] `pytest -q` green; `ruff check .` and `black --check .` clean; `git status` shows only intended files
+- [x] `pytest -q` green (1 passed); `ruff check .` and `black --check .` clean; `git status` shows only intended files — all observed 2026-10-29
 
 Risks: doc churn — mitigated by freezing anchors in ADR-006.
 
 Exit criteria:
 
-- [ ] Docs committed, contradictions F.1–F.4 closed, skeleton CI green
+- [x] Docs committed, contradictions F.1–F.4 closed, skeleton CI green — F.1–F.4 closed via ADR-006 (F.4 rule recorded, enforced Phase 2); commits on branch, merge pending review
 
 ### Phase 1 — Time, evidence, secrets (P0)
 
@@ -319,14 +319,14 @@ Exit criteria:
 
 ## F. Critical Decisions and Open Questions
 
-- [ ] F.1 Milestone scheme conflict — bundle README/13 use M1–M4 + P0–P3 while staging 15 uses M0–M3; same labels, different meanings. Recommendation: adopt M0–M3 everywhere (Phase 0 rewrites README/13/10 labels).
-- [ ] F.2 Anchor numbers conflict — README anchors vs 05 values vs 03 fixture vs 10-A disagree. Recommendation: freeze 05/06 values in ADR-006 (Phase 0).
-- [ ] F.3 Trace schema has three dialects (06 envelope vs 09 field names vs 07 sketch). Recommendation: 06 §5 + §8 canonical; fix 09 §5 and 07 §4 (Phase 0/1).
-- [ ] F.4 `run_id` content-derived (06) vs golden byte-compare exemptions (03 FR-03) vs byte-identical demand (10 §6). Recommendation: normalize `run_id` + declared `ts_wall` before diff (Phase 0 ADR-006, enforced Phase 2).
+- [x] F.1 Milestone scheme conflict — bundle README/13 use M1–M4 + P0–P3 while staging 15 uses M0–M3; same labels, different meanings. Recommendation: adopt M0–M3 everywhere (Phase 0 rewrites README/13/10 labels). — closed via ADR-006 + label edits (05 prose mapping recorded, cleanup deferred to M0).
+- [x] F.2 Anchor numbers conflict — README anchors vs 05 values vs 03 fixture vs 10-A disagree. Recommendation: freeze 05/06 values in ADR-006 (Phase 0). — closed via ADR-006 anchor table + README/10-A conformance.
+- [x] F.3 Trace schema has three dialects (06 envelope vs 09 field names vs 07 sketch). Recommendation: 06 §5 + §8 canonical; fix 09 §5 and 07 §4 (Phase 0/1). — canonical declared in ADR-006; example conformance (14, 09 §5, 03, 04) is M0 follow-up work.
+- [x] F.4 `run_id` content-derived (06) vs golden byte-compare exemptions (03 FR-03) vs byte-identical demand (10 §6). Recommendation: normalize `run_id` + declared `ts_wall` before diff (Phase 0 ADR-006, enforced Phase 2). — rule recorded in ADR-006; enforcement lands with the Phase 2 seed-matrix gate.
 - [ ] F.5 Llama endpoint assumed, not specified (`llama-3.3-70b` placeholder, OQ-02 open; no canonical endpoint found). Recommendation: OpenAI-compatible adapter vs configurable `LLAMA_BASE_URL` + model id; pin default at Phase 4; live calls flagged `slow` with fixture fallback.
-- [ ] F.6 S4 lives outside git (`_staging_adlc`). Recommendation: port in Phase 0; S4 specs to 03/06/07/10 or ADR-007.
-- [ ] F.7 Unowned OQs in 09/10/11 (TBD owners). Recommendation: founder = scope, tech lead = technical (Phase 0).
-- [ ] F.8 `pip install agentcrash` (15 M3) vs `pip install -e .[dev]` + `python -m` (09/13); no `pip` binary in WSL (only `uv`). Recommendation: console-script canonical at Phase 7 with `python -m` shim; quickstart uses `uv venv` + `uv pip`.
+- [x] F.6 S4 lives outside git (`_staging_adlc`). Recommendation: port in Phase 0; S4 specs to 03/06/07/10 or ADR-007. — corrected: staging tree is absent (not outside git); resolved via ADR-007 deferral, no specs invented.
+- [x] F.7 Unowned OQs in 09/10/11 (TBD owners). Recommendation: founder = scope, tech lead = technical (Phase 0). — done (also 03 OQs + 04/12 gates).
+- [ ] F.8 `pip install agentcrash` (15 M3) vs `pip install -e .[dev]` + `python -m` (09/13); no `pip` binary in WSL (only `uv`). Recommendation: console-script canonical at Phase 7 with `python -m` shim; quickstart uses `uv venv` + `uv pip`. — preempted in part: console script + `python -m` shim + uv workflow landed in the Phase 0 scaffold; final call stays Phase 7.
 
 ## G. Risks and Mitigation Plan
 
@@ -336,11 +336,11 @@ Exit criteria:
 - [ ] Secret/PII leak via traces → env-only keys, write-time redaction, gitignored traces, `--scan-pii`, golden review checklist, rotate + delete + runbook note on incident
 - [ ] Scope creep (SaaS, dashboards, code repair) → enforce 02 §4/§7.3; diff-only diagnoser in code; static-export viewer only
 - [ ] Poisoned-fixture mishandling → single labelled file, untrusted tags, delimiter rendering, per-milestone rotation, copy rule
-- [ ] Dirty-tree doc loss (filled docs uncommitted, tarball untracked) → commit everything in Phase 0; keep `_staging_adlc` backup until ported
+- [x] Dirty-tree doc loss (filled docs uncommitted, tarball untracked) → commit everything in Phase 0; keep `_staging_adlc` backup until ported — docs committed on `chore/phase-0-baseline`; backup n/a (staging absent)
 
 ## H. Milestone-Based Execution Checklist
 
-- [ ] Phase 0: ADR-006 written; S4 ported; pyproject/lint/test configs; repo public verified; filled docs committed; empty CI green
+- [x] Phase 0: ADR-006 written (+ADR-007; S4 port → recorded absence, deferred); pyproject/lint/test configs; repo public verified; filled docs committed (branch, merge pending); empty CI green (local; Actions runs on push)
 - [ ] Phase 1: clock + tracer + schemas + ledger + redaction tests green; 09 §5 fixed to 06
 - [ ] Phase 2: tools + injector + stub/fake + `run` offline; golden failing trace in; seed-matrix diff green; README/10-A anchors fixed
 - [ ] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated
@@ -351,11 +351,11 @@ Exit criteria:
 
 ## I. Recommended First Implementation Step
 
-Port the S4/v0.2.1 staging content into `docs/adlc/`, record ADR-006 (scheme + anchors + canonical schema + run_id rule), then scaffold `pyproject.toml` + package skeleton + lint/test configs for a green-empty CI. Why first: every later artifact depends on frozen anchors and one schema dialect; building on contradictions guarantees rework.
+Record ADR-006 (scheme + anchors + canonical schema + run_id rule), then scaffold `pyproject.toml` + package skeleton + lint/test configs for a green-empty CI. Why first: every later artifact depends on frozen anchors and one schema dialect; building on contradictions guarantees rework. (The S4/v0.2.1 port step was dropped: the staging tree is absent — see ADR-007. Docs 01/02/15 already used M0–M3 and needed no changes.)
 
-- [ ] Prerequisites: this plan's approval (`go`)
-- [ ] Expected changes: `docs/adlc/01, 02, 15` (+ S4 stubs in 03/06/07/10 or ADR-007); new `pyproject.toml`, `src/agentcrash/__init__.py`, `.gitignore`, CI workflow
-- [ ] Verify with: `git status` (intended files only), `pytest -q` green, `ruff check .` and `black --check .` clean
+- [x] Prerequisites: this plan's approval (`go`) — Phase 0 `go` given 2026-10-29; Phases 1+ still await `go`
+- [x] Expected changes: `docs/adlc/01, 02, 15` (+ S4 stubs in 03/06/07/10 or ADR-007); new `pyproject.toml`, `src/agentcrash/__init__.py`, `.gitignore`, CI workflow — landed as: ADR-006/007 + label/anchor/owner edits across 11 adlc docs; new `pyproject.toml`, `src/agentcrash/` (3 files), `tests/`, `.github/workflows/ci.yml`, `.gitignore`, `uv.lock` (01/02/15 untouched — no changes needed)
+- [x] Verify with: `git status` (intended files only), `pytest -q` green, `ruff check .` and `black --check .` clean — all observed green 2026-10-29
 - [ ] Note: commits/pushes happen only on explicit ask per repo safety rules
 
 ## Sources
