@@ -30,6 +30,6 @@ jobs:
       - name: PII guardrail (scan-pii over PASS golden trace + state)
         run: >
           uv run --no-sync agentcrash check
-          --trace traces/golden/timeout_retry-fixed-seed42.jsonl
-          --state traces/golden/timeout_retry-fixed-seed42.state.json
+          --trace tests/fixtures/traces/odrl_convert_timeout-fixed-seed42.jsonl
+          --state tests/fixtures/traces/odrl_convert_timeout-fixed-seed42.state.json
           --report-out /tmp/scan-pii.verdict.json --scan-pii
