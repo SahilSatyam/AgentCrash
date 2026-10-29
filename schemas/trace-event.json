@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "trace-event",
+  "description": "One JSONL trace event envelope (trace/v1, doc 06 S5, ADR-006)",
+  "type": "object",
+  "required": [
+    "event_id",
+    "prev_hash",
+    "ts_virtual",
+    "run_id",
+    "scenario",
+    "step",
+    "tool",
+    "args",
+    "outcome",
+    "latency",
+    "injector_event",
+    "policy_decision"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "pattern": "^evt_[0-9a-f]{16}_[0-9]{4}$"},
+    "prev_hash": {"type": "string"},
+    "ts_virtual": {"type": "integer", "minimum": 0},
+    "run_id": {"type": "string", "pattern": "^[0-9a-f]{16}$"},
+    "scenario": {"type": "string"},
+    "step": {"type": "integer", "minimum": 0},
+    "tool": {"type": ["string", "null"]},
+    "args": {"type": "object"},
+    "outcome": {"type": "string", "enum": ["success", "timeout", "error", "blocked", "info"]},
+    "latency": {"type": "integer", "minimum": 0},
+    "injector_event": {"type": ["object", "null"]},
+    "policy_decision": {"type": ["object", "null"]},
+    "detail": {"type": "object"}
+  }
+}

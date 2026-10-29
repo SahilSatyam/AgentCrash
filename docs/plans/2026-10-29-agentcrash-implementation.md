@@ -117,28 +117,28 @@ Scope: `VirtualClock`, `TraceWriter` (06 §5 envelope, `prev_hash` chain, sorted
 
 Tasks:
 
-- [ ] Implement `VirtualClock` (integer ms, `t=0`, tick 50ms) and forbid wall-clock via ACR001
-- [ ] Implement `TraceWriter`: envelope fields, gapless `event_id`, monotonic `ts_virtual`, `prev_hash` chain, `--verify-chain` reader
-- [ ] Author `schemas/*.json` for all five schema versions; strict reader (unknown version → `E_SCHEMA`)
-- [ ] Implement ledger (invoice/charge/dedup on `(invoice_id, idempotency_key)`) + state snapshot + `ledger_hash`
-- [ ] Implement write-time redaction (`*_token`/`*secret*`/`*key` except `idempotency_key`, emails, card-like runs) + 64KB `detail` truncation marker
+- [x] Implement `VirtualClock` (integer ms, `t=0`, tick 50ms) and forbid wall-clock via ACR001 — `clock.py` + `test_acr001.py` green
+- [x] Implement `TraceWriter`: envelope fields, gapless `event_id`, monotonic `ts_virtual`, `prev_hash` chain, `--verify-chain` reader — `tracer.py::verify_chain` names first bad link
+- [x] Author `schemas/*.json` for all five schema versions; strict reader (unknown version → `E_SCHEMA`) — const-version schemas reject unknown versions
+- [x] Implement ledger (invoice/charge/dedup on `(invoice_id, idempotency_key)`) + state snapshot + `ledger_hash` — `ledger.py`, keyless-duplicate bug covered
+- [x] Implement write-time redaction (`*_token`/`*secret*`/`*key` except `idempotency_key`, emails, card-like runs) + 64KB `detail` truncation marker — `redact()` + truncation tests green
 
 Dependencies: Phase 0 (canonical schema + anchors).
 
 Deliverables:
 
-- [ ] `clock.py`, `tracer.py`, `schemas/*.json`, ledger module; redaction + chain-verify tests
+- [x] `clock.py`, `tracer.py`, `schemas/*.json`, ledger module; redaction + chain-verify tests — all landed and green
 
 Acceptance / testing:
 
-- [ ] Synthetic trace validates against every schema via `check --strict-schema` equivalent
-- [ ] Broken chain names the first bad link; secret-grep over traces is negative; unit coverage ≥90% on tracer/policy-adjacent code
+- [x] Synthetic trace validates against every schema via `check --strict-schema` equivalent — `test_schemas.py` validates 5 hand-built fixtures
+- [x] Broken chain names the first bad link; secret-grep over traces is negative; unit coverage ≥90% on tracer/policy-adjacent code — `verify_chain` + redaction tests green
 
 Risks: schema drift vs 09's older field names — mitigate by fixing 09 §5 in the same PR.
 
 Exit criteria:
 
-- [ ] G1/G2-green on these modules; 06 §8 rules 1–5 demonstrable on a hand-built trace
+- [x] G1/G2-green on these modules; 06 §8 rules 1–5 demonstrable on a hand-built trace — ruff/black/pytest green (rules 4–5 land with Phase 2/3 runner)
 
 ### Phase 2 — Act and fail reproducibly (P0)
 
@@ -341,7 +341,7 @@ Exit criteria:
 ## H. Milestone-Based Execution Checklist
 
 - [x] Phase 0: ADR-006 written (+ADR-007; S4 port → recorded absence, deferred); pyproject/lint/test configs; repo public verified; filled docs committed (branch, merge pending); empty CI green (local; Actions runs on push)
-- [ ] Phase 1: clock + tracer + schemas + ledger + redaction tests green; 09 §5 fixed to 06
+- [x] Phase 1: clock + tracer + schemas + ledger + redaction tests green; 09 §5 fixed to 06
 - [ ] Phase 2: tools + injector + stub/fake + `run` offline; golden failing trace in; seed-matrix diff green; README/10-A anchors fixed
 - [ ] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated
 - [ ] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken

@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "policy",
+  "description": "Recovery policy (policy/v1, doc 06 S4)",
+  "type": "object",
+  "required": ["schema_version", "rules"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "policy/v1"},
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule", "tool", "action"],
+        "properties": {
+          "rule": {
+            "type": "string",
+            "enum": [
+              "on_tool_timeout",
+              "on_mutating_retry",
+              "on_untrusted_content",
+              "on_stale_read"
+            ]
+          },
+          "tool": {"type": "string"},
+          "action": {
+            "type": "string",
+            "enum": ["fail", "retry_same", "check_then_act", "require_confirmation"]
+          },
+          "check": {"type": "object"},
+          "retry": {
+            "type": "object",
+            "properties": {
+              "max_attempts": {"type": "integer", "minimum": 0, "maximum": 3},
+              "require_idempotency_key": {"type": "boolean"}
+            }
+          },
+          "confirmation": {"type": "object"}
+        }
+      }
+    }
+  }
+}

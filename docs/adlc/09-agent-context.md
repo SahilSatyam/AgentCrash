@@ -124,30 +124,61 @@ Example check output shape (verifier verdicts, deterministic):
 
 ## 5. File conventions
 
-Scenario files are YAML with three blocks: task, fault, invariants.
-Keep the timeout_retry scenario as the reference example:
+> Canonical trace envelope is doc 06 §5 per ADR-006. The older dotted
+> names (`tool.call`, `clock_ms`, `TIMEOUT_AMBIGUOUS`, …) below were
+> replaced in Phase 1; scenario values are unchanged.
 
-    scenario: timeout_retry
-    task: Pay vendor 150 USD for invoice 9821
+Scenario files are YAML following the `scenario/v1` schema (doc 06 §3).
+Keep the `payment_gateway_timeout` scenario as the reference example:
+
+    schema_version: "scenario/v1"
+    scenario: payment_gateway_timeout
+    task: "Pay vendor $150 for invoice #9821"
     seed: 42
-    fault:
-      type: ambiguous_timeout
-      tool: charge_card
-      latency_ms: 250
-      timeout_ms: 200
-      commit_side_effect: true
+    tools:
+      - name: charge_card
+        latency_ms: 300
+        timeout_ms: 1500
+        mutating: true
+        idempotency_key_arg: idempotency_key
+      - name: get_transaction_status
+        latency_ms: 120
+        timeout_ms: 1000
+        mutating: false
+        idempotency_key_arg: null
+    faults:
+      - at_step: 3
+        kind: timeout_after_commit
+        params:
+          tool: charge_card
+          simulated_latency_ms: 2000
     invariants:
       - id: exactly_once_mutation
-        check: count of charge_card calls equals 1
+        check: "count(calls['charge_card']) == 1"
+        description: "The payment tool must commit exactly once."
       - id: task_completion
-        check: environment invoice_status equals PAID
+        check: "environment.invoice_status == 'PAID'"
+        description: "The legitimate task still completes after recovery."
+    policy: "policies/default.yaml"
+    max_steps: 12
 
-Trace events are JSONL, one object per line. Minimum fields per event type:
+Trace events are JSONL, one object per line, UTF-8, sorted keys. Every
+event carries the full 06 §5 envelope (no per-type field sets):
 
-    tool.call: seq, tool, args, seed, clock_ms
-    tool.result: seq, tool, outcome, ambiguous flag, clock_ms
-    injector.event: seq, fault name, detail, clock_ms
-    policy.decision: seq, rule, action taken, clock_ms
+    event_id, prev_hash, ts_virtual, run_id, scenario, step, tool,
+    args, outcome, latency, injector_event, policy_decision, detail
+
+Notes: `event_id` is `evt_<run_id>_<zero-padded seq>` (gapless);
+`prev_hash` chains lines (`GENESIS` first); `ts_virtual` is monotonic
+virtual ms (the ONLY time verifiers may read); `outcome` is one of
+`success`, `timeout`, `error`, `blocked`, `info` (an ambiguous timeout
+is `outcome: timeout` with the ambiguity in `injector_event`
+(`fault = timeout_after_commit`)); `tool`/`injector_event`/
+`policy_decision` are
+null when not applicable; scenario-specific payloads live in `detail`
+(64 KB cap with truncation marker); secrets/PII are redacted at write
+time (`*_token`/`*secret*`/`*key` except `idempotency_key`, plus email
+and card-like shapes).
 
 Policy files are YAML or JSON with retry, idempotency, and confirmation
 sections. The diagnoser may only emit a diff against this schema, for example

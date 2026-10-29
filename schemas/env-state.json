@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "env-state",
+  "description": "Post-run environment snapshot (env_state/v1, doc 06 S6)",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "invoices",
+    "charges",
+    "docs",
+    "record_versions",
+    "ledger_hash"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "env_state/v1"},
+    "run_id": {"type": "string"},
+    "invoices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "vendor", "amount", "status"],
+        "properties": {
+          "id": {"type": "integer"},
+          "vendor": {"type": "string"},
+          "amount": {"type": "number"},
+          "status": {"type": "string", "enum": ["UNPAID", "PAID", "REFUNDED"]}
+        }
+      }
+    },
+    "charges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["charge_id", "invoice_id", "amount", "idempotency_key"],
+        "properties": {
+          "charge_id": {"type": "string"},
+          "invoice_id": {"type": "integer"},
+          "amount": {"type": "number"},
+          "idempotency_key": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "docs": {"type": "array"},
+    "record_versions": {"type": "array"},
+    "ledger_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
