@@ -1,0 +1,10 @@
+# Naive v0 policy: blind same-action retry with no idempotency key.
+# Expected to FAIL scenario A with a double charge (Phase 3 oracle).
+schema_version: policy/v1
+rules:
+  - rule: on_tool_timeout
+    tool: charge_card
+    action: retry_same
+    retry:
+      max_attempts: 1
+      require_idempotency_key: false

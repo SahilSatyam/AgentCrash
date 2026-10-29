@@ -148,27 +148,27 @@ Scope: `ToolRegistry` (`charge_card`, `get_transaction_status`; seeded latency; 
 
 Tasks:
 
-- [ ] Implement registry + arg schema validation (unknown tools/args rejected and recorded, never executed)
-- [ ] Implement injector: YAML schedule, step-3 default, seeded PRNG single `random.Random(seed)` threaded through
-- [ ] Implement stub agent + `fake` adapter; `run` writes trace + state snapshot; per-tool virtual deadline → TIMEOUT continues within 5s wall
-- [ ] Author `scenarios/timeout_retry/scenario.yaml` + naive `policies/default.yaml`; check in first golden failing trace
+- [x] Implement registry + arg schema validation (unknown tools/args rejected and recorded, never executed) — done: `tools.py` ToolRegistry, unit-covered in `test_run.py`
+- [x] Implement injector: YAML schedule, step-3 default, seeded PRNG single `random.Random(seed)` threaded through — done: `injector.py` FaultSchedule; `alien_fault` refused exit 2 with no trace
+- [x] Implement stub agent + `fake` adapter; `run` writes trace + state snapshot; per-tool virtual deadline → TIMEOUT continues within 5s wall — done: `adapter.py` run_react_loop + `cli.py run`, offline stub/fake, faulted run <5s wall
+- [x] Author `scenarios/timeout_retry/scenario.yaml` + naive `policies/default.yaml`; check in first golden failing trace — done: golden at `traces/golden/timeout_retry-seed42.jsonl` (2 charges, PAID)
 
 Dependencies: Phase 1 (tracer, schemas, ledger).
 
 Deliverables:
 
-- [ ] `run` end-to-end offline; scenario + naive policy; golden failing trace
+- [x] `run` end-to-end offline; scenario + naive policy; golden failing trace — done: `steps=4 charges=2`, chain-verified, committed
 
 Acceptance / testing:
 
-- [ ] FR-01–03 oracles; seed matrix (1,7,42,123,2026) byte-identical after normalizing `run_id`/`ts_wall`; `alien_fault` exits non-zero ≤2s with no trace file
-- [ ] Wiring tests (10 §3 stub rows) + rerun-diff green
+- [x] FR-01–03 oracles; seed matrix (1,7,42,123,2026) byte-identical after normalizing `run_id`/`ts_wall`; `alien_fault` exits non-zero ≤2s with no trace file — done: `test_run.py` 16 tests green, matrix reruns normalized-identical, alien refusal <2s
+- [x] Wiring tests (10 §3 stub rows) + rerun-diff green — done: tool_call → TIMEOUT tool_result → injector_event order asserted at step 3
 
 Risks: nondeterminism creep — mitigate with ACR001 + quarantine-once-in-20 policy (10 §6).
 
 Exit criteria:
 
-- [ ] `run` emits schema-valid JSONL for happy + fault paths with no key; ledger shows 1 committed charge vs agent-observed TIMEOUT at step 3
+- [x] `run` emits schema-valid JSONL for happy + fault paths with no key; ledger shows 1 committed charge vs agent-observed TIMEOUT at step 3 — done: every event validates, chain ok, ch_001 linked to step-3 TIMEOUT, final 2 charges
 
 ### Phase 3 — Verdicts you can audit (P0)
 
@@ -342,7 +342,7 @@ Exit criteria:
 
 - [x] Phase 0: ADR-006 written (+ADR-007; S4 port → recorded absence, deferred); pyproject/lint/test configs; repo public verified; filled docs committed (branch, merge pending); empty CI green (local; Actions runs on push)
 - [x] Phase 1: clock + tracer + schemas + ledger + redaction tests green; 09 §5 fixed to 06
-- [ ] Phase 2: tools + injector + stub/fake + `run` offline; golden failing trace in; seed-matrix diff green; README/10-A anchors fixed
+- [x] Phase 2: tools + injector + stub/fake + `run` offline; golden failing trace in; seed-matrix diff green; README/10-A anchors fixed (anchors already conformant — no edits needed)
 - [ ] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated
 - [ ] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken
 - [ ] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green
