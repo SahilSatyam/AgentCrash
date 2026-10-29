@@ -19,7 +19,7 @@ ADR, never edits history.
 # ADR-NNN: [Decision title]
 
 - **Status:** Proposed | Accepted | Rejected | Superseded
-- **Milestone:** M1 | M2 | M3 | M4
+- **Milestone:** M0 | M1 | M2 | M3 (repo-wide per ADR-006)
 - **Decision owner:** [name or role]
 - **Related requirements:** [links to 03-requirements sections]
 - **Related ADRs:** [ADR-NNN links]
@@ -281,20 +281,106 @@ side-effect count. M3 adds poisoned-document and stale-read scenarios with new A
 
 ---
 
+## ADR-006: Repo-wide milestone scheme (M0–M3) + frozen v0 anchors + canonical schema
+
+- **Status:** Accepted
+- **Milestone:** M0 (Phase 0 baseline)
+- **Decision owner:** Tech lead (scope-affecting: founder consulted)
+- **Related requirements:** doc 15 §1–2 (milestone map); docs 05 §5 + 06 §3/§5 (v0 values); doc 10 §4 (scenario oracles)
+- **Related ADRs:** ADR-002 (trace evidence), ADR-003 (virtual clock), ADR-004 (policy limits win over prose)
+
+### Context
+
+Four contradictions blocked implementation (plan §F.1–F.4): (1) milestone labels differ per doc — adlc README + doc 13 use M1–M4, doc 05 uses P0–P3 phases, docs 03/04/12 use "Phase N", while docs 01/02/15 already use M0–M3; (2) v0 anchor numbers disagree — adlc README says tool latency 40 / threshold 800 / inject at vclock 1250, doc 09 §5 says 250/200, doc 10-A says 250/200, docs 05/06 say 300/1500/fault-2000; (3) the trace schema has competing dialects — 06 §5 envelope vs 09 §5 field names vs 07 §4 sketch vs 03 FR-09/10 fields vs 04 domain-model names; (4) `run_id` is content-derived (reruns collide by design) while seed-matrix gates demand byte-identical diffs. Every later artifact (schemas, goldens, seed-matrix tests) depends on exactly one answer per conflict.
+
+### Options considered
+
+| Option | Fate | Reason |
+|---|---|---|
+| Keep per-doc labels, reconcile at each gate | Rejected | Guarantees rework of goldens and tests at every gate |
+| Adopt M0–M3 everywhere now, freeze 05/06 values, declare 06 §5 canonical | Chosen | One scheme (doc 15, already M0–M3); one value set; one schema dialect |
+
+### Decision
+
+1. **Scheme:** M0–M3 per doc 15 §1 is repo-wide. P0–P2 stay reserved for requirement *priority* (docs 03/12, plan key) — never milestones. Historical labels map as: old-M1 (foundations) → M0 entry work; old-M2 (prototype slice) → M0 exit; old-M3 (scenario expansion) → M1; old-M4 (hardening + demo) → M2+M3. Doc 05's P0–P3 phases map as P0 → pre-M0 (done), P1 (v0 CLI) → M0, P2 → M1+M2, P3 → M3; doc 05 prose cleanup is deferred to an M0 PR. Ratified ADRs keep their old milestone stamps (history is never edited); new ADRs use M0–M3.
+2. **Frozen v0 anchors** (05 §5 + 06 §3 authoritative; everything else conforms):
+
+   | Anchor | Value |
+   |---|---|
+   | Scenario id / path | `payment_gateway_timeout` at `scenarios/timeout_retry/scenario.yaml` |
+   | Task | Pay vendor $150 for invoice #9821 |
+   | VirtualClock tick | 50 ms, `t=0` at run start |
+   | Tool latencies (virtual) | `charge_card` 300 ms, `get_transaction_status` 120 ms, `read_doc` 80 ms |
+   | `charge_card` timeout threshold | 1500 ms virtual |
+   | Fault | `timeout_after_commit` at step 3, simulated latency 2000 ms |
+   | Seed | default 42; matrix 1, 7, 42, 123, 2026 |
+   | `max_steps` default | 12 |
+   | `run_id` | `sha256(scenario_file + policy_file + seed)[:16]` |
+   | Mutating-retry limits | `max_retries` 0–3, default 1 (ADR-004 wins over 06 §4's 1..5/default-2) |
+   | Confirmation gate | above $100 (10000 cents) |
+   | Example idempotency key | `inv-9821-a3f` |
+   | Schema versions | `scenario/v1`, `policy/v1`, `policy_patch/v1`, `trace/v1`, `env_state/v1` |
+
+3. **Canonical schema:** 06 §5 envelope + §8 validation rules. Competing spellings are frozen out: `TIMEOUT_AMBIGUOUS` → `outcome: timeout` with the ambiguity carried in `injector_event` (fault `timeout_after_commit`); `clock_ms`/`virtual_ts_ms` → `ts_virtual`; `trace_schema_version`/`actor`/`payload` (03 FR-09) and dotted `tool.call`/`tool.result` names (09 §5) are not v1. Follow-up fixes, in order: 14 examples (demo-visible), 09 §5, 03 FR-09/10, 04 §1-row-12 + §3 names, 12 DET-04 prose.
+4. **Golden-diff normalization:** strip `run_id`, `event_id` (embeds `run_id`), the `prev_hash` chain, and any wall-clock metadata fields before diffing; every other byte must be identical across same-(scenario, seed, policy) reruns.
+
+### Consequences
+
+- Benefits: one scheme, one value set, one schema dialect for all M0+ artifacts.
+- Tradeoffs and risks: old-milestone stamps stay readable in history (accepted; the mapping above disambiguates).
+- Follow-up work: anchor conformance edits (adlc README + doc 10-A in Phase 0; 09 §5 + 03/04/14 examples in M0) — doc owners per adlc README table.
+- Revisit when: a second scenario needs new anchors (new ADR then, never an edit here).
+
+---
+
+## ADR-007: S4/ODRL source material is absent — no invented specs
+
+- **Status:** Accepted
+- **Milestone:** M0 (Phase 0 baseline)
+- **Decision owner:** Founder (scope: supply S4 source or drop S4)
+- **Related requirements:** plan §F.6 (S4 port); doc 15 changelog (stays at v0.1.0 — no v0.2.1 source exists)
+- **Related ADRs:** ADR-006 (what Phase 0 freezes)
+
+### Context
+
+The plan assumed a `_staging_adlc/` tree (S4 ODRL + v0.2.1 content for docs 01/02/15) to port into `docs/adlc/`. That tree exists in neither the working tree nor git history, and no S4/ODRL spec exists anywhere else in the repo. Inventing S4 specs to fill the gap would create unreviewed scope.
+
+### Options considered
+
+| Option | Fate | Reason |
+|---|---|---|
+| Invent S4 stubs now so the milestone map looks complete | Rejected | Unreviewed scope with no source; violates evidence-over-opinion (doc 13 §1) |
+| Record the gap, defer S4 until sourced | Chosen | M0–M2 proceed on S1–S3 only; S4 needs source + ADR before scheduling |
+
+### Decision
+
+Port nothing. S4 spec stubs (03/06/07/10 or a dedicated ADR) land only after the founder supplies the staging source or explicitly drops S4 from scope. Doc 15's changelog stays at v0.1.0 until then.
+
+### Consequences
+
+- Benefits: no phantom scope; S1–S3 work is unaffected.
+- Tradeoffs and risks: plan work items referencing S4/v0.2.1 stay parked (visible here, not silently dropped).
+- Follow-up work: founder supplies source or scope decision — resolves by M1 entry.
+- Revisit when: S4 source material arrives.
+
+---
+
 ## ADR index
 
 | ADR | Title | Status | Milestone |
 |---|---|---|---|
-| ADR-001 | Deterministic verification separated from LLM diagnosis | Accepted | M1 |
-| ADR-002 | JSONL trace as single evidence format | Accepted | M1 |
-| ADR-003 | Virtual clock over wall-clock | Accepted | M1 |
-| ADR-004 | Policy-file-only diagnoser edits | Accepted | M2 |
-| ADR-005 | Scenario-first prototype slice | Accepted | M2 |
+| ADR-001 | Deterministic verification separated from LLM diagnosis | Accepted | M1 (old scheme; = M0 entry work per ADR-006) |
+| ADR-002 | JSONL trace as single evidence format | Accepted | M1 (old scheme; = M0 entry work per ADR-006) |
+| ADR-003 | Virtual clock over wall-clock | Accepted | M1 (old scheme; = M0 entry work per ADR-006) |
+| ADR-004 | Policy-file-only diagnoser edits | Accepted | M2 (old scheme; = M0 exit per ADR-006) |
+| ADR-005 | Scenario-first prototype slice | Accepted | M2 (old scheme; = M0 exit per ADR-006) |
+| ADR-006 | Repo-wide scheme (M0–M3) + frozen anchors + canonical schema | Accepted | M0 |
+| ADR-007 | S4/ODRL source absent — no invented specs | Accepted | M0 |
 
 ## Open Questions (genuinely undecided, with owners)
 
 | # | Question | Owner | Resolves by |
 |---|---|---|---|
-| OQ-1 | Multi-model comparison harness across Llama variants — M3 or M4? | Tech lead | M3 planning |
-| OQ-2 | Trace retention for shared demo instances (local files vs. hosted bucket)? | Backend engineer | M4 |
-| OQ-3 | `confirm_with_user` in headless CI replay — auto-abort or scripted approver? | Product lead | M2 exit |
+| OQ-1 | Multi-model comparison harness across Llama variants — M2 or M3? | Tech lead | M2 exit (per ADR-006 scheme) |
+| OQ-2 | Trace retention for shared demo instances (local files vs. hosted bucket)? | Backend engineer | M3 |
+| OQ-3 | `confirm_with_user` in headless CI replay — auto-abort or scripted approver? | Product lead | M0 exit |

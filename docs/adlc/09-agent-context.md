@@ -1,6 +1,6 @@
 # 09 — Agent context
 
-**Status:** Draft · **Owner:** TBD · **Last reviewed:** 2026-10-28
+**Status:** Draft · **Owner:** Tech lead · **Last reviewed:** 2026-10-28
 
 > How any coding agent (human-paired or autonomous) should work in this repo.
 > This is the working draft behind the concise root AGENTS file.
@@ -214,5 +214,5 @@ verification. Concretely:
 
 | Question | Owner | Notes |
 |---|---|---|
-| Typer versus argparse for the CLI | TBD | Decide at M1; keep flags identical either way |
-| Golden trace update review process | TBD | Proposal: golden diffs need one reviewer plus offline check proof |
+| Typer versus argparse for the CLI | Tech lead | Decide at M0; keep flags identical either way |
+| Golden trace update review process | Tech lead | Proposal: golden diffs need one reviewer plus offline check proof |

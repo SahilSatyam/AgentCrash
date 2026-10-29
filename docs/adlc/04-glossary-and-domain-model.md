@@ -1,6 +1,6 @@
 # 04 — Glossary and Domain Model
 
-**Status:** Draft · **Owner:** Startup founder (Open Question OQ-01 in [03](03-requirements-and-srs.md): confirm docs owner) · **Phase gate:** Phase 1 (Prototype v0) entry
+**Status:** Draft · **Owner:** Founder (scope; OQ-01 in [03](03-requirements-and-srs.md) resolved: Founder) · **Phase gate:** M0 (Prototype v0) entry
 
 > ADLC lens: one shared vocabulary so the two-person startup, its prompts, its code, and its
 > docs never mean different things by the same word. Every requirement ID in
@@ -126,7 +126,7 @@ erDiagram
 - Never invent a second word for a defined term in requirements, schemas, or prompts; record
   candidate synonyms in §2 first and pick one.
 - Open Question OQ-G1: package/module layout mirroring these entities (`verifiers/`,
-  `injector/`, `tracer/`) — default yes, owner to confirm at Phase 1 design review
+  `injector/`, `tracer/`) — default yes, Tech lead to confirm at M0 design review
   (see `05-system-design.md`).
 
 ## 4. Worked example: the double-charge told in glossary terms
@@ -154,6 +154,6 @@ vocabulary was needed to tell the whole v0 story.
 
 | Milestone | Change | Author |
 |---|---|---|
-| Phase 0 draft | Glossary skeleton with one placeholder term | Pre-Phase-1 skeleton (author unrecorded; OQ-01) |
-| Phase 1 draft (this file) | 36 defined terms, synonym ban list, full entity/relationship model + mermaid; all TBDs replaced except OQ-01 (owner) and OQ-G1 (module layout) | Group B |
+| Pre-M0 draft | Glossary skeleton with one placeholder term | Pre-M0 skeleton (author unrecorded; OQ-01) |
+| M0 draft (this file) | 36 defined terms, synonym ban list, full entity/relationship model + mermaid; all TBDs replaced except OQ-G1 (module layout) | Group B |
 

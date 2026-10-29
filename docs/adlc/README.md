@@ -1,6 +1,6 @@
 # ADLC Document Set — AgentCrash
 
-**Status:** Approved · **Owner:** Tech lead · **Milestone:** M1 Foundations
+**Status:** Approved · **Owner:** Tech lead · **Milestone:** M0 Baseline
 **Lens:** ADLC (AI/Agentic Development Lifecycle) for a startup idea: problem, users,
 MVP, risks, costs — no corporate bureaucracy, no day-wise timelines.
 
@@ -23,17 +23,18 @@ adapter. This folder is the working home of the lifecycle docs that define it.
 | **Open Question** | Genuinely undecided; always paired with an owner and a resolve-by milestone | Doc author |
 
 Rules: placeholders are never silent — an unknown is an Open Question with an owner, not
-a bare TBD. Dates never appear as schedule commitments; milestones (M1–M4) are the only
-gating mechanism. A status change happens by PR reviewed by the doc owner.
+a bare TBD. Dates never appear as schedule commitments; milestones (M0–M3, per
+ADR-006 and doc 15 §1) are the only gating mechanism. A status change happens by
+PR reviewed by the doc owner.
 
 ## Milestones (the only schedule this project has)
 
 | Milestone | Name | Exit gate |
 |---|---|---|
-| M1 | Foundations | Skeleton run emits valid JSONL; docs 01–08 approved |
-| M2 | Prototype Slice | Timeout exactly-once loop green end to end; docs 09–14 approved |
-| M3 | Scenario Expansion | Poisoned-doc + stale-read scenarios with verifiers; regression green |
-| M4 | Hardening + Demo | Soak parity report; runbook demoed twice clean; cost sheet published |
+| M0 | Prototype | S1 reproduces the double charge deterministically; CLI loop closes (`run`/`check`/`replay` + reference patch PASS) |
+| M1 | Three-scenario suite | S1+S2+S3 with verifiers; diagnoser policy diffs; precision ≥ 0.95 / recall ≥ 0.90 |
+| M2 | Policy-diff review + regression | Reviewable diffs; full regression green on every policy change |
+| M3 | Multi-model + packaging | Per-model comparison table; shippable package; rehearsed demo |
 
 ## Document map
 
@@ -51,7 +52,7 @@ gating mechanism. A status change happens by PR reviewed by the doc owner.
 | 10 | [Testing strategy](10-testing-strategy.md) | How do we prove it works? | Backend engineer | M2 |
 | 11 | [Security and compliance](11-security-and-compliance.md) | What can go wrong adversarially? | Tech lead | M2 |
 | 12 | [Non-functional requirements](12-non-functional-requirements.md) | How fast, how reliable, how cheap? | Tech lead | M2 |
-| 13 | [Contributing and workflow](13-contributing-and-workflow.md) | How do we work, review, and release? | Tech lead | M1 |
+| 13 | [Contributing and workflow](13-contributing-and-workflow.md) | How do we work, review, and release? | Tech lead | M0 |
 | 14 | [Runbook](14-runbook.md) | How do we demo and operate it? | Tech lead (demo captain) | M2 |
 | 15 | [Roadmap and changelog](15-roadmap-and-changelog.md) | What changed per milestone? | Founder | Each gate |
 
@@ -73,8 +74,8 @@ Agents must read in this order before writing code, and cite the docs that justi
 each change in the PR:
 
 1. This README (map + status convention + milestones).
-2. `04` glossary — use canonical terms (`TIMEOUT_AMBIGUOUS`, idempotency key,
-   `vclock_ms`) exactly; synonyms break verifiers.
+2. `04` glossary — use canonical terms (`timeout`, idempotency key,
+   `ts_virtual`) exactly; synonyms break verifiers (per ADR-006).
 3. `08` ADRs — treat ADR-001–005 as hard constraints: never let model output set a
    verdict, never emit non-JSONL evidence, never use wall-clock in tools, never exceed
    the policy schema, never widen v0 beyond the timeout scenario without a new ADR.
@@ -94,10 +95,15 @@ Run (agent acts in synthetic env, seeded, virtual clock)
   → Diagnose (LLM proposes policy diff ONLY) & Replay (verify fix + regressions)
 ```
 
-Concrete v0 anchor values used consistently across all docs: scenario `timeout_retry`,
-tool `charge_card`, invoice #9821, amount $150, default latency 40 vms, timeout
-threshold 800 vms, injection at `vclock_ms` 1250, outcome `TIMEOUT_AMBIGUOUS`,
-idempotency key `inv-9821-a3f`, policy `max_retries` 0–3 (default 1 for mutating tools),
+Concrete v0 anchor values are frozen in ADR-006 (doc 08) and used consistently
+across all docs: scenario `payment_gateway_timeout` at
+`scenarios/timeout_retry/scenario.yaml`, tool `charge_card`, invoice #9821,
+amount $150, tick 50 ms, `charge_card` latency 300 vms, `get_transaction_status`
+latency 120 vms, timeout threshold 1500 vms, `timeout_after_commit` fault at
+step 3 with simulated latency 2000 vms, outcome `timeout` (ambiguity in
+`injector_event`), seed 42 (matrix 1, 7, 42, 123, 2026), `max_steps` 12,
+`run_id = sha256(scenario_file + policy_file + seed)[:16]`, example idempotency
+key `inv-9821-a3f`, policy `max_retries` 0–3 (default 1 for mutating tools),
 confirmation above $100 (10000 cents).
 
 ## Open Questions (docs-level, with owners)
@@ -105,7 +111,7 @@ confirmation above $100 (10000 cents).
 | # | Question | Owner | Resolves by |
 |---|---|---|---|
 | OQ-D1 | Do docs 06/07 need full field-level specs in M2, or are the v0 anchors above enough? | Backend engineer | M2 exit |
-| OQ-D2 | Hosted docs site vs. repo-rendered Markdown for external reviewers? | Product lead | M4 |
+| OQ-D2 | Hosted docs site vs. repo-rendered Markdown for external reviewers? | Product lead | M3 |
 
 ## Contributing to these docs
 
@@ -125,10 +131,10 @@ day-wise date or Gantt-style schedule to any doc — milestone gates only.
 
 ## Doc lifecycle across milestones
 
-- M1 entry: docs 01–05 and 08 exist at least as Draft; 13 is Approved so work can start.
-- M1 exit review: docs 01–08 Approved; Open Questions carry owners into M2.
-- M2 exit review: docs 09–14 Approved; the runbook demo (doc 14) executed twice clean.
-- M3/M4: docs 06–08 extended for new scenarios; doc 15 changelog updated at each gate.
+- M0 entry: docs 01–05 and 08 exist at least as Draft; 13 is Approved so work can start.
+- M0 exit review: docs 01–08 Approved; Open Questions carry owners into M1.
+- M1 exit review: docs 09–14 Approved; the runbook demo (doc 14) executed twice clean.
+- M2/M3: docs 06–08 extended for new scenarios; doc 15 changelog updated at each gate.
 - A doc regresses Draft → Approved only forward: re-review the changed sections, never
   the whole set, and record the transition in the PR.
 

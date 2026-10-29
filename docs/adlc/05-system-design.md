@@ -171,8 +171,8 @@ clock.sleep(2000)                          # exceeds 1500 ms threshold -> TIMEOU
 | D3 | Timeout-after-commit as the v0 fault | It is the fault that causes real money loss (double charge) | Timeout-before-commit only (safe retry teaches nothing) | ADR-003 |
 | D4 | Single JSONL trace for all scenarios | One schema, one `check` path, greppable evidence | Per-scenario tables / OTel collector from the start | ADR-004 |
 | D5 | Policy as data (YAML/JSON), patched by merge-patch | Diagnoser output is reviewable, diffable, replayable | Free-form code fixes from the LLM (unverifiable, unreviewable) | ADR-005 |
-| D6 | Local CLI before any service | Keeps burn near zero; design partners run it on laptops | Hosted platform MVP (ops burden, premature) | ADR-006 |
-| D7 | Hash-chained trace events | Tamper-evident evidence; cheap to implement | Unsigned logs (no integrity story for audit-minded buyers) | ADR-007 |
+| D6 | Local CLI before any service | Keeps burn near zero; design partners run it on laptops | Hosted platform MVP (ops burden, premature) | ADR-008 (reserved) |
+| D7 | Hash-chained trace events | Tamper-evident evidence; cheap to implement | Unsigned logs (no integrity story for audit-minded buyers) | ADR-009 (reserved) |
 
 ## 10. Observability and failure handling (summary)
 

@@ -1,6 +1,6 @@
 # 14 — Runbook (Demo-Day + Operator Guide)
 
-**Status:** Approved · **Owner:** Tech lead (demo captain) · **Milestone:** M2 Prototype Slice
+**Status:** Approved · **Owner:** Tech lead (demo captain) · **Milestone:** M0 Prototype
 **Lens:** ADLC startup runbook — one page to prepare, one loop to demo, one table to
 survive surprises. No day-wise timeline; readiness is gated by rehearsal count.
 
@@ -179,6 +179,6 @@ silently misapplied.
 | Backend engineer | Harness, tracer, replay correctness | Nondeterministic verdicts or schema errors |
 | Product lead | Story, costs, follow-up issues | Budget overrun or scope question from the audience |
 
-**Open Question (owner: tech lead, resolves by M4):** hosted shareable demo vs. local
+**Open Question (owner: tech lead, resolves by M3):** hosted shareable demo vs. local
 laptop demo — if hosted, this runbook gains a deploy/rollback section for the demo
 instance; until then, local-only is the supported path.
