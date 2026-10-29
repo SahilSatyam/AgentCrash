@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+pip-wheel-metadata/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# ruff / mypy
+.ruff_cache/
+.mypy_cache/
+
+# AgentCrash run outputs (goldens excepted)
+traces/*
+!traces/golden/
+!traces/golden/*
+reports/*
+!reports/.gitkeep
+demo-evidence/
+
+# secrets
+.env
+*.pem
+*.key
