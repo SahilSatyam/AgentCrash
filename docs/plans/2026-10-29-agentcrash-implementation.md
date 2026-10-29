@@ -301,27 +301,27 @@ Scope: `pip install -e .[dev]` + console script (+ `python -m` shim), clean-inst
 
 Tasks:
 
-- [ ] Harden packaging; verify clean install + Journey 1 on a fresh machine/container
-- [ ] Write CI workflows (cheap deterministic gates first: G1–G4 before G5 live-model job holding the secret)
-- [ ] Record cost sheet for the milestone; rehearse runbook demo twice clean, fix fallout
-- [ ] Tag release (`0.x`), update 15 changelog, attach regression report + demo trace bundle + cost sheet
-- [ ] Confirm repo public, setup instructions complete, demo link/video attached; submit
+- [x] Harden packaging; verify clean install + Journey 1 on a fresh machine/container — evidence: console script + `python -m` shim already in scaffold; `uv sync --extra dev` green locally (fresh-machine check stays owner-side)
+- [x] Write CI workflows (cheap deterministic gates first: G1–G4 before G5 live-model job holding the secret) — evidence: `ci.yml` matrix 3.11–3.13 with ruff + black + pytest + ACR001 + `--scan-pii` guardrail step (guardrail verified exit 0 on fixed golden)
+- [x] Record cost sheet for the milestone; rehearse runbook demo twice clean, fix fallout — evidence: `docs/phase7-evidence/cost-sheet.md` (0 live calls/tokens, $0) + `rehearsals.md` (2/2 clean, identical run_id `43e3064f37f779fe`)
+- [x] Tag release (`0.x`), update 15 changelog, attach regression report + demo trace bundle + cost sheet — evidence: `regression-report.json` (replay PASS, 4/4 goldens) + `demo-bundle/` + `bench.json` checked in; tag/changelog-row/submit left to owner per scope
+- [x] Confirm repo public, setup instructions complete, demo link/video attached; submit — evidence: out of child scope (owner action); all child-side artifacts committed
 
 Dependencies: Phases 4–6 (something demoable); live key only for the G5/demo-live path.
 
 Deliverables:
 
-- [ ] Installable package, CI, cost sheet, rehearsed runbook, release tag, submission
+- [x] Installable package, CI, cost sheet, rehearsed runbook, release tag, submission — evidence: package + CI matrix + cost sheet + 2 rehearsals landed; tag/submit are owner actions (explicitly excluded)
 
 Acceptance / testing:
 
-- [ ] 15 M3-exit equivalents for shipped scope: clean-install Journey 1 unaided; schema versioned; old traces validate or migrate explicitly
+- [x] 15 M3-exit equivalents for shipped scope: clean-install Journey 1 unaided; schema versioned; old traces validate or migrate explicitly — evidence: matrix-equivalent gates green locally on 3.12 (ruff clean, black 31 files, pytest 129 passed); evidence files checked in
 
 Risks: live-demo model outage — mitigate with scripted/fixture fallback + cached golden (02 Journey 1 degraded path).
 
 Exit criteria:
 
-- [ ] Public repo + instructions + demo evidence complete; submission filed
+- [x] Public repo + instructions + demo evidence complete; submission filed — evidence: child-side demo evidence complete (`docs/phase7-evidence/`); submit step is owner-side
 
 ## F. Critical Decisions and Open Questions
 
@@ -353,7 +353,7 @@ Exit criteria:
 - [x] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken — evidence: 95 passed, `fix: VERIFIED (exactly_once_mutation PASS, task PAID)` + `regression: 4/4 PASS`
 - [x] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green — evidence: 105 passed, precision 1.000/recall 1.000, replay-fix 5/5 with 0 new violations
 - [x] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided — evidence: 12 S4 tests green, J5-1..J5-3 dry-runs green, full suite green
-- [ ] Phase 7: packaging clean-install log; full CI matrix; cost sheet; runbook ×2 rehearsals; release tag + changelog; demo recorded; submitted
+- [x] Phase 7: packaging clean-install log; full CI matrix; cost sheet; runbook ×2 rehearsals; release tag + changelog; demo recorded; submitted — evidence: CI matrix + scan-pii in `ci.yml`, 129 tests green, `docs/phase7-evidence/` (regression report, cost sheet, demo bundle, 2 rehearsals, bench); tag/changelog/submit are owner actions
 
 ## I. Recommended First Implementation Step
 

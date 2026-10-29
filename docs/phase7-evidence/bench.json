@@ -1,0 +1,12 @@
+{
+  "bare_s": 0.0134,
+  "harness_s": 0.0787,
+  "hundred_step_bytes": 40197,
+  "n_events": 2000,
+  "overhead_pass": false,
+  "overhead_ratio": 4.8553,
+  "overhead_target": 0.1,
+  "repeats": 5,
+  "trace_size_pass": true,
+  "trace_size_target_bytes": 2097152
+}

@@ -7,11 +7,15 @@ on:
 jobs:
   gates:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v5
       - name: Install (with dev extras)
         run: uv sync --extra dev
@@ -21,3 +25,11 @@ jobs:
         run: uv run --no-sync black --check .
       - name: Tests
         run: uv run --no-sync pytest -q
+      - name: Determinism lint (ACR001)
+        run: uv run --no-sync pytest tests/test_acr001.py -q
+      - name: PII guardrail (scan-pii over PASS golden trace + state)
+        run: >
+          uv run --no-sync agentcrash check
+          --trace traces/golden/timeout_retry-fixed-seed42.jsonl
+          --state traces/golden/timeout_retry-fixed-seed42.state.json
+          --report-out /tmp/scan-pii.verdict.json --scan-pii

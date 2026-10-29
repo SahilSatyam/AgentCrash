@@ -287,6 +287,12 @@ def cmd_check(argv: list[str]) -> int:
     parser.add_argument("--verify-chain", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--report-out", default=None)
     parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser.add_argument(
+        "--scan-pii",
+        action="store_true",
+        help="scan the raw trace + state files for leaked emails/card-like "
+        "runs (redaction placeholders exempt); exit non-zero on any hit",
+    )
     args = parser.parse_args(argv)
     as_json = args.format == "json"
 
@@ -390,6 +396,20 @@ def cmd_check(argv: list[str]) -> int:
     Path(report_out).write_text(
         json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
     )
+
+    if args.scan_pii:
+        from agentcrash.scan_pii import format_hits, scan_files
+
+        hits = scan_files([str(trace_path), state_ref])
+        if hits:
+            emit(f"PII scan: {len(hits)} raw-PII hit(s) in trace/state:")
+            emit(format_hits(hits))
+            return fail(
+                "E_PII_LEAK",
+                f"{len(hits)} raw-PII hit(s); see locations above",
+                EXIT_VERDICT_FAIL,
+            )
+        emit(f"PII scan: clean ({trace_path}, {state_ref})")
 
     for row in report["results"]:
         mark = "PASS" if row["passed"] else "FAIL"
