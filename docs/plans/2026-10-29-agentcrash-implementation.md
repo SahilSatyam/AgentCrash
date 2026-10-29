@@ -178,26 +178,26 @@ Scope: `Verifier` protocol + `exactly_once_mutation` + `task_completion`, `check
 
 Tasks:
 
-- [ ] Implement `Verifier` protocol (pure `(trace, state)` → `Verdict`; harness bugs raise `VerifierError`, never false verdicts)
-- [ ] Implement the two v0 verifiers with offending-step evidence strings
-- [ ] Implement `check` incl. JSON mode (stdout pure JSON, prose to stderr) and `--report-out` verdict file
-- [ ] Curate `tests/golden/` (failing double-charge + fixed single-charge + give-up UNPAID traces) with expected verdicts pinned
+- [x] Implement `Verifier` protocol (pure `(trace, state)` → `Verdict`; harness bugs raise `VerifierError`, never false verdicts) — done: `verifiers.py` protocol + registry (`get_verifier` unknown → E_CONFIG), `run_verifiers` rejects bad verdict objects
+- [x] Implement the two v0 verifiers with offending-step evidence strings — done: `exactly_once_mutation` cites charge steps, `task_completion` cites invoice status; ± fixtures in `test_verifiers.py`
+- [x] Implement `check` incl. JSON mode (stdout pure JSON, prose to stderr) and `--report-out` verdict file — done: `cli.py cmd_check`, exits 0/1/2/3, `--strict-schema` 06 §8 rules 1–5, `--verify-chain` names first bad link
+- [x] Curate `tests/golden/` (failing double-charge + fixed single-charge + give-up UNPAID traces) with expected verdicts pinned — done: `traces/golden/` holds seed42 failing + seed43 fixed + seed44 give-up trace/state/verdict triples
 
 Dependencies: Phase 2 (traces to judge).
 
 Deliverables:
 
-- [ ] `check` + golden suite; G3 offline gate (network disabled) green
+- [x] `check` + golden suite; G3 offline gate (network disabled) green — done: verifiers/check touch no network (ACR001-clean); `pytest -q` 67 passed incl. golden suite + 3× identical JSON reports
 
 Acceptance / testing:
 
-- [ ] FR-13–16 oracles; 3× identical JSON reports incl. one network-off run; false-pass rate 0 on goldens; malformed traces rejected (never PASS)
+- [x] FR-13–16 oracles; 3× identical JSON reports incl. one network-off run; false-pass rate 0 on goldens; malformed traces rejected (never PASS) — done: `test_check.py` covers all four (network-off by construction, no sockets in verifier path)
 
 Risks: verifier false-pass killing trust — mitigate with positive + negative fixtures per verifier (13 §7).
 
 Exit criteria:
 
-- [ ] `run → check` shows `[FAIL] exactly_once_mutation` with steps 3/4 evidence and `[PASS] task_completion` on the golden
+- [x] `run → check` shows `[FAIL] exactly_once_mutation` with steps 3/4 evidence and `[PASS] task_completion` on the golden — done: observed on `traces/golden/timeout_retry-seed42.jsonl` (exit 1, steps [3, 4] cited)
 
 ### Phase 4 — Close the loop (P0)
 
@@ -343,7 +343,7 @@ Exit criteria:
 - [x] Phase 0: ADR-006 written (+ADR-007; S4 port → recorded absence, deferred); pyproject/lint/test configs; repo public verified; filled docs committed (branch, merge pending); empty CI green (local; Actions runs on push)
 - [x] Phase 1: clock + tracer + schemas + ledger + redaction tests green; 09 §5 fixed to 06
 - [x] Phase 2: tools + injector + stub/fake + `run` offline; golden failing trace in; seed-matrix diff green; README/10-A anchors fixed (anchors already conformant — no edits needed)
-- [ ] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated
+- [x] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated — evidence: 67 passed, `check` seed42 golden exits 1 with steps [3, 4]
 - [ ] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken
 - [ ] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green
 - [ ] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided

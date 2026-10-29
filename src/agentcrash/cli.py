@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -13,10 +14,21 @@ import yaml
 from agentcrash import __version__
 from agentcrash.adapter import DEFAULT_MODEL, run_react_loop
 from agentcrash.injector import FaultSchedule, UnknownFaultError
-from agentcrash.tracer import compute_run_id
+from agentcrash.tracer import compute_run_id, verify_chain
+from agentcrash.verifiers import (
+    TraceCorruptError,
+    UnknownVerifierError,
+    VerifierError,
+    load_state_snapshot,
+    load_trace_events,
+    run_verifiers,
+    strict_validate,
+)
 
 EXIT_OK = 0
+EXIT_VERDICT_FAIL = 1
 EXIT_USAGE = 2
+EXIT_CORRUPT = 3
 EXIT_RUNABORTED = 5
 
 
@@ -199,24 +211,165 @@ def cmd_run(argv: list[str]) -> int:
     return EXIT_RUNABORTED if summary["status"] == "runaway" else EXIT_OK
 
 
+def _infer_scenario(trace_scenario: str) -> Path:
+    """Find the scenario.yaml whose id matches the trace scenario."""
+    for candidate in sorted(Path("scenarios").glob("*/scenario.yaml")):
+        try:
+            data, _ = load_yaml(candidate)
+        except ConfigError:
+            continue
+        if data.get("scenario") == trace_scenario:
+            return candidate
+    raise ConfigError(
+        f"cannot infer --scenario for trace scenario {trace_scenario!r}; pass --scenario"
+    )
+
+
+def cmd_check(argv: list[str]) -> int:
+    """Execute `agentcrash check` (exit 0 PASS, 1 VERDICT_FAIL, 3 corrupt)."""
+    parser = argparse.ArgumentParser(prog="agentcrash check")
+    parser.add_argument("--trace", required=True)
+    parser.add_argument("--scenario", default=None)
+    parser.add_argument("--state", default=None)
+    parser.add_argument("--strict-schema", action="store_true")
+    parser.add_argument("--verify-chain", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--report-out", default=None)
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+    args = parser.parse_args(argv)
+    as_json = args.format == "json"
+
+    def fail(code: str, hint: str, exit_code: int) -> int:
+        if as_json:
+            print(
+                json.dumps(
+                    {"api_version": "v1", "code": code, "exit": exit_code, "hint": hint},
+                    sort_keys=True,
+                )
+            )
+        else:
+            print(f"agentcrash check: {code}: {hint}", file=sys.stderr)
+        return exit_code
+
+    def emit(text: str) -> None:
+        print(text, file=sys.stderr if as_json else sys.stdout)
+
+    trace_path = Path(args.trace)
+    if not trace_path.is_file():
+        return fail("E_CONFIG", f"trace file not found: {args.trace!r}", EXIT_USAGE)
+    try:
+        events = load_trace_events(str(trace_path))
+    except TraceCorruptError as exc:
+        emit(f"trace {trace_path} is corrupt: {exc}")
+        return fail("E_TRACE_CORRUPT", str(exc), EXIT_CORRUPT)
+
+    if args.verify_chain:
+        chain = verify_chain(str(trace_path))
+        if not chain["ok"]:
+            hint = f"broken chain at {chain['first_bad']}: {chain['reason']}"
+            emit(f"trace {trace_path} is corrupt: {hint}")
+            return fail("E_TRACE_CORRUPT", hint, EXIT_CORRUPT)
+
+    trace_scenario = events[0].get("scenario", "")
+    try:
+        scenario_path = Path(args.scenario) if args.scenario else _infer_scenario(trace_scenario)
+        scenario, scenario_text = load_yaml(scenario_path)
+        policy_path = resolve_policy(None, scenario_path, scenario)
+        policy, policy_text = load_yaml(policy_path)
+    except ConfigError as exc:
+        return fail("E_CONFIG", str(exc), EXIT_USAGE)
+
+    run_id = str(events[0].get("run_id", ""))
+    state_ref = args.state or str(Path("reports") / f"{run_id}.state.json")
+    if not Path(state_ref).is_file():
+        return fail("E_CONFIG", f"state file not found: {state_ref!r}", EXIT_USAGE)
+    try:
+        state = load_state_snapshot(state_ref)
+    except TraceCorruptError as exc:
+        emit(f"state {state_ref} is corrupt: {exc}")
+        return fail("E_TRACE_CORRUPT", str(exc), EXIT_CORRUPT)
+
+    seed = scenario.get("seed", 42)
+    if args.strict_schema:
+        try:
+            schema_path = Path(__file__).resolve().parent.parent.parent / "schemas"
+            envelope = json.loads((schema_path / "trace-event.json").read_text(encoding="utf-8"))
+            seed = strict_validate(
+                events,
+                scenario=scenario,
+                scenario_text=scenario_text,
+                policy_text=policy_text,
+                policy=policy,
+                state=state,
+                envelope_schema=envelope,
+            )
+        except TraceCorruptError as exc:
+            emit(f"trace {trace_path} failed --strict-schema: {exc}")
+            return fail("E_TRACE_CORRUPT", str(exc), EXIT_CORRUPT)
+
+    invariants = scenario.get("invariants", [])
+    if not invariants:
+        return fail("E_CONFIG", f"scenario {scenario_path} declares no invariants", EXIT_USAGE)
+    try:
+        outcome = run_verifiers(events, state, invariants)
+    except UnknownVerifierError as exc:
+        return fail("E_CONFIG", str(exc), EXIT_USAGE)
+    except VerifierError as exc:
+        emit(f"trace {trace_path} cannot be judged: {exc}")
+        return fail("E_TRACE_CORRUPT", str(exc), EXIT_CORRUPT)
+
+    policy_hash = "sha256:" + hashlib.sha256(policy_text.encode()).hexdigest()
+    charges = state.get("charges", [])
+    task_done = all(inv.get("status") == "PAID" for inv in state.get("invoices", []))
+    task_done = bool(task_done and state.get("invoices"))
+    report = {
+        "api_version": "v1",
+        "ledger_hash": state.get("ledger_hash"),
+        "policy_hash": policy_hash,
+        "results": outcome["results"],
+        "run_id": run_id,
+        "scenario": scenario.get("scenario"),
+        "seed": seed,
+        "side_effect_count": len(charges) if isinstance(charges, list) else 0,
+        "task_completion": task_done,
+        "verdict": outcome["verdict"],
+    }
+    report_out = args.report_out or str(Path("reports") / f"{run_id}.verdict.json")
+    Path(report_out).parent.mkdir(parents=True, exist_ok=True)
+    Path(report_out).write_text(
+        json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+
+    for row in report["results"]:
+        mark = "PASS" if row["passed"] else "FAIL"
+        verb = "satisfied" if row["passed"] else "violated!"
+        emit(f"[{mark}] Invariant {row['id']} {verb} ({row['evidence']})")
+    emit(f"verdict={report['verdict']} report={report_out}")
+    if as_json:
+        print(json.dumps(report, sort_keys=True, indent=2))
+    return EXIT_OK if report["verdict"] == "PASS" else EXIT_VERDICT_FAIL
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Dispatch subcommands; `run` is live in Phase 2, the rest follow."""
+    """Dispatch subcommands; `run` and `check` are live, the rest follow."""
     raw = list(sys.argv[1:] if argv is None else argv)
     if "--version" in raw:
         print(f"agentcrash {__version__}")
         return EXIT_OK
     if not raw or raw[0] in ("-h", "--help"):
-        print("usage: agentcrash [--version] {run} ...")
+        print("usage: agentcrash [--version] {run, check} ...")
         print("  run: execute an agent against a chaos scenario (offline, stub/fake)")
-        print("  check/diagnose/replay: land in later M0 phases")
+        print("  check: deterministically verify invariants against a trace")
+        print("  diagnose/replay: land in later M0 phases")
         return EXIT_OK if raw else EXIT_USAGE
     command, rest = raw[0], raw[1:]
     if command == "run":
         return cmd_run(rest)
-    if command in ("check", "diagnose", "replay"):
+    if command == "check":
+        return cmd_check(rest)
+    if command in ("diagnose", "replay"):
         print(
             f"agentcrash {command}: not implemented yet "
-            "(lands in a later M0 phase; 'run' is available).",
+            "(lands in a later M0 phase; 'run' and 'check' are available).",
             file=sys.stderr,
         )
         return 1
