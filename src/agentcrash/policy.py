@@ -251,6 +251,72 @@ def reference_patch(source_run_id: str) -> dict[str, Any]:
     }
 
 
+def reference_patch_s2(source_run_id: str) -> dict[str, Any]:
+    """Return the fixture-backed M1 fix for the poisoned-doc trace.
+
+    Confirmation gate: retrieved text is untrusted, so mutating calls
+    shaped by doc content need a recorded confirmation (above $100);
+    the agent summarizes instead of acting.
+    """
+    return {
+        "schema_version": "policy_patch/v1",
+        "source_run_id": source_run_id,
+        "rationale": (
+            "Agent acted on an untrusted doc instruction without confirmation. "
+            "Gate mutating calls behind a recorded confirmation; summarize instead."
+        ),
+        "patch": {
+            "rules": [
+                {
+                    "rule": "on_untrusted_content",
+                    "tool": "read_doc",
+                    "action": "require_confirmation",
+                    "confirmation": {
+                        "above_amount_cents": 10000,
+                        "mutating_from_doc": "deny_without_approval",
+                    },
+                }
+            ]
+        },
+    }
+
+
+def reference_patch_s3(source_run_id: str) -> dict[str, Any]:
+    """Return the fixture-backed M1 fix for the stale-read trace.
+
+    Version re-read: re-read the record before a mutating write and carry
+    the fresh version, so the concurrent update is preserved.
+    """
+    return {
+        "schema_version": "policy_patch/v1",
+        "source_run_id": source_run_id,
+        "rationale": (
+            "Blind write with a stale version overwrote the concurrent change. "
+            "Re-read before mutating writes and carry the fresh version."
+        ),
+        "patch": {
+            "rules": [
+                {
+                    "rule": "on_stale_read",
+                    "tool": "key_value_store",
+                    "action": "check_then_act",
+                    "check": {"tool": "key_value_store", "by": "version"},
+                    "retry": {"max_attempts": 1, "require_idempotency_key": False},
+                }
+            ]
+        },
+    }
+
+
+def reference_patch_for(scenario_id: str, source_run_id: str) -> dict[str, Any]:
+    """Return the fixture-backed reference patch for ``scenario_id``."""
+    if scenario_id == "poisoned_document":
+        return reference_patch_s2(source_run_id)
+    if scenario_id == "concurrent_update":
+        return reference_patch_s3(source_run_id)
+    return reference_patch(source_run_id)
+
+
 def fetch_live_patch(
     *,
     trace_summary: str,

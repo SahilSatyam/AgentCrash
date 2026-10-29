@@ -76,7 +76,7 @@ def paid_state(n_charges, status="PAID"):
 
 
 def test_registry_holds_v0_verifiers() -> None:
-    assert set(verifier_ids()) == {"exactly_once_mutation", "task_completion"}
+    assert {"exactly_once_mutation", "task_completion"} <= set(verifier_ids())
     assert get_verifier("exactly_once_mutation").id == "exactly_once_mutation"
 
 

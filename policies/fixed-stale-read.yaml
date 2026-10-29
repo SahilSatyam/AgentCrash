@@ -1,0 +1,14 @@
+# Fixed S3 policy: mandatory freshness proof before mutating writes.
+# On a stale read the agent re-reads the record and writes with the fresh
+# version, so the concurrent update is preserved (no lost update).
+schema_version: policy/v1
+rules:
+  - rule: on_stale_read
+    tool: key_value_store
+    action: check_then_act
+    check:
+      tool: key_value_store
+      by: version
+    retry:
+      max_attempts: 1
+      require_idempotency_key: false

@@ -1,9 +1,11 @@
-"""Deterministic synthetic tools: charge_card + get_transaction_status.
+"""Deterministic synthetic tools: payments, docs, and versioned records.
 
 Seeded virtual latencies come from the scenario YAML tool specs; every call
 advances only the harness VirtualClock (ADR-003, ADR-006). Unknown tools and
 unexpected args are rejected and recorded (``outcome: error``) — never
-executed. No wall-clock, no network, no model calls.
+executed. ``read_doc`` returns seeded fixture bytes tagged
+``untrusted_source`` (doc 11 S3); ``key_value_store`` does versioned
+reads/writes. No wall-clock, no network, no model calls.
 """
 
 from __future__ import annotations
@@ -15,10 +17,25 @@ from agentcrash.ledger import Ledger
 
 CHARGE_CARD = "charge_card"
 GET_TRANSACTION_STATUS = "get_transaction_status"
+READ_DOC = "read_doc"
+KEY_VALUE_STORE = "key_value_store"
 
 FIRST_IDEMPOTENCY_KEY = "inv-9821-a3f"
 
+#: Marker an obedient-scripted attacker instruction carries in S2 fixtures.
+INSTRUCTION_MARKER = "INSTRUCTION:"
+
 _IMPLEMENTED = (CHARGE_CARD, GET_TRANSACTION_STATUS)
+
+
+def render_untrusted(text: str, source: str) -> str:
+    """Wrap retrieved doc bytes in labeled delimiters (doc 11 S3).
+
+    The trace keeps raw bytes for evidence; every CLI rendering goes
+    through this helper so operators never mistake test content for
+    product guidance.
+    """
+    return f'<untrusted_content source="{source}">\n{text}\n</untrusted_content>'
 
 
 def _is_number(value: Any) -> bool:
@@ -47,6 +64,28 @@ def _validate_args(name: str, args: dict[str, Any]) -> str | None:
         if type(args.get("invoice_id")) is not int:
             return "get_transaction_status requires integer invoice_id"
         return None
+    if name == READ_DOC:
+        unknown = sorted(set(args) - {"doc_id"})
+        if unknown:
+            return f"unknown arg(s) for read_doc: {', '.join(unknown)}"
+        if not isinstance(args.get("doc_id"), str) or not args["doc_id"]:
+            return "read_doc requires a non-empty string doc_id"
+        return None
+    if name == KEY_VALUE_STORE:
+        unknown = sorted(set(args) - {"op", "record", "value", "expected_version"})
+        if unknown:
+            return f"unknown arg(s) for key_value_store: {', '.join(unknown)}"
+        if args.get("op") not in ("read", "write"):
+            return "key_value_store requires op 'read' or 'write'"
+        if not isinstance(args.get("record"), str) or not args["record"]:
+            return "key_value_store requires a non-empty string record"
+        if args["op"] == "write":
+            if not isinstance(args.get("value"), dict):
+                return "key_value_store write requires an object value"
+            expected = args.get("expected_version")
+            if expected is not None and type(expected) is not int:
+                return "key_value_store expected_version must be an integer or null"
+        return None
     return f"tool {name!r} is not implemented in v0"
 
 
@@ -64,17 +103,23 @@ class ToolRegistry:
         tool_specs: list[dict[str, Any]],
         ledger: Ledger,
         rng: Any | None = None,
+        doc_store: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._specs = {spec["name"]: dict(spec) for spec in tool_specs}
         self._ledger = ledger
         self._rng = rng
+        self._docs = dict(doc_store or {})
 
     @classmethod
     def from_scenario(
-        cls, scenario: dict[str, Any], ledger: Ledger, rng: Any | None = None
+        cls,
+        scenario: dict[str, Any],
+        ledger: Ledger,
+        rng: Any | None = None,
+        doc_store: dict[str, dict[str, Any]] | None = None,
     ) -> ToolRegistry:
         """Build a registry from a parsed scenario.yaml dict."""
-        return cls(scenario.get("tools", []), ledger, rng)
+        return cls(scenario.get("tools", []), ledger, rng, doc_store)
 
     @property
     def tool_names(self) -> list[str]:
@@ -142,6 +187,73 @@ class ToolRegistry:
                     "invoice_id": args["invoice_id"],
                     "status": status,
                     "amount": amount,
+                },
+            }
+        if name == READ_DOC:
+            doc = self._docs.get(args["doc_id"])
+            if doc is None:
+                return {
+                    "outcome": "error",
+                    "latency_ms": 0,
+                    "error": f"unknown doc_id {args['doc_id']!r}",
+                    "data": {},
+                }
+            clock.sleep(latency_ms)
+            text = str(doc.get("text", ""))
+            self._ledger.record_doc(
+                args["doc_id"], str(doc.get("fixture", "")), str(doc.get("label", ""))
+            )
+            outcome = "timeout" if latency_ms > timeout_ms else "success"
+            return {
+                "outcome": outcome,
+                "latency_ms": latency_ms,
+                "error": None,
+                "data": {
+                    "doc_id": args["doc_id"],
+                    "text": text,
+                    "bytes": len(text.encode("utf-8")),
+                    "untrusted_source": True,
+                    "fixture": str(doc.get("fixture", "")),
+                    "label": str(doc.get("label", "")),
+                    "has_instruction": INSTRUCTION_MARKER in text,
+                },
+            }
+        if name == KEY_VALUE_STORE:
+            name_ = args["record"]
+            if args["op"] == "read":
+                record = self._ledger.kv_read(name_)
+                if record is None:
+                    return {
+                        "outcome": "error",
+                        "latency_ms": 0,
+                        "error": f"unknown record {name_!r}",
+                        "data": {},
+                    }
+                clock.sleep(latency_ms)
+                outcome = "timeout" if latency_ms > timeout_ms else "success"
+                return {
+                    "outcome": outcome,
+                    "latency_ms": latency_ms,
+                    "error": None,
+                    "data": {
+                        "record": name_,
+                        "value": record["value"],
+                        "version": record["version"],
+                    },
+                }
+            written = self._ledger.kv_write(name_, args["value"], args.get("expected_version"))
+            clock.sleep(latency_ms)
+            outcome = "timeout" if latency_ms > timeout_ms else "success"
+            return {
+                "outcome": outcome,
+                "latency_ms": latency_ms,
+                "error": None,
+                "data": {
+                    "record": name_,
+                    "value": dict(args["value"]),
+                    "version": written["version"],
+                    "expected_version": args.get("expected_version"),
+                    "version_conflict": written["conflict"],
                 },
             }
         return {

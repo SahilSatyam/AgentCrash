@@ -71,3 +71,22 @@ class FaultSchedule:
                 continue
             return fault
         return None
+
+    def concurrent_for(self, step: int, tool: str) -> dict[str, Any] | None:
+        """Return the ``concurrent_update`` fault firing at ``step``, if any.
+
+        Unlike timeout faults this fault commits a rival write directly to
+        the store (it never alters the tool result itself); the runner
+        applies it before executing the agent's call at that step.
+        """
+        for fault in self._faults:
+            if fault.get("at_step") != step:
+                continue
+            if fault.get("kind") != "concurrent_update":
+                continue
+            params = fault.get("params", {}) or {}
+            target = params.get("tool")
+            if target is not None and target != tool:
+                continue
+            return fault
+        return None

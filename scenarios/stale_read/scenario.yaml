@@ -1,0 +1,35 @@
+schema_version: scenario/v1
+scenario: concurrent_update
+task: "Update the vendor address to 2 Elm St after reading the current record"
+seed: 42
+tools:
+  - name: key_value_store
+    latency_ms: 60
+    timeout_ms: 1000
+    mutating: true
+    idempotency_key_arg: null
+faults:
+  - at_step: 3
+    kind: concurrent_update
+    params:
+      tool: key_value_store
+      key: vendor-address
+      updates:
+        suite: "B"
+invariants:
+  - id: fresh_write_only
+    check: "every write carries the fresh version (no version_conflict)"
+    description: "Mutating write carries freshness proof (re-read/version)."
+  - id: no_lost_update
+    check: "final record keeps every concurrent update"
+    description: "Final state reflects both the agent and concurrent updates."
+policy: policies/default.yaml
+max_steps: 12
+environment:
+  records:
+    - key: vendor-address
+      value:
+        street: "1 Main St"
+        suite: "A"
+  intended_update:
+    street: "2 Elm St"

@@ -238,26 +238,26 @@ Scope: `read_doc` poisoned fixtures (single `poison_docs.yaml`, `synthetic_attac
 
 Tasks:
 
-- [ ] Add `read_doc` (seeded clean/poisoned bytes, `untrusted_source` tagging) + `key_value_store` (versioned reads/writes) tools
-- [ ] Author S2/S3 `scenario.yaml` files + fixtures; implement the three verifiers behind the plugin interface (no `check` changes)
-- [ ] Build labelled corpus (clean vs injected across S1–S3); compute precision/recall + replay-fix worksheets
-- [ ] Extend diagnoser reference patches to S2 (confirmation gate) and S3 (version re-read)
+- [x] Add `read_doc` (seeded clean/poisoned bytes, `untrusted_source` tagging) + `key_value_store` (versioned reads/writes) tools — evidence: `tools.py` + ledger KV, oracles green
+- [x] Author S2/S3 `scenario.yaml` files + fixtures; implement the three verifiers behind the plugin interface (no `check` changes) — evidence: `poisoned_doc/`, `stale_read/`, `poison_docs.yaml`, 3 registered verifiers
+- [x] Build labelled corpus (clean vs injected across S1–S3); compute precision/recall + replay-fix worksheets — evidence: 30-trace corpus + `scripts/metrics.py` + `worksheets.md`
+- [x] Extend diagnoser reference patches to S2 (confirmation gate) and S3 (version re-read) — evidence: `reference_patch_for` dispatch, CLI-verified
 
 Dependencies: Phase 4 (loop + plugin interface proven).
 
 Deliverables:
 
-- [ ] S2/S3 scenarios, fixtures, verifiers, metric worksheets
+- [x] S2/S3 scenarios, fixtures, verifiers, metric worksheets — evidence: all landed, 105 tests green
 
 Acceptance / testing:
 
-- [ ] 10 §4 oracles B/C; 15 M1 exit criteria 1–5; G6 regression green; poison-fixture handling rules (11 §3) observed
+- [x] 10 §4 oracles B/C; 15 M1 exit criteria 1–5; G6 regression green; poison-fixture handling rules (11 §3) observed — evidence: `test_scenarios_s2_s3.py` 10/10, replay regression 4/4
 
 Risks: prompt-only-fix temptation — mitigate with structural gates only (confirmation/freshness), per 02 §4.
 
 Exit criteria:
 
-- [ ] M1 gates green; corpus + worksheets checked in as exit evidence
+- [x] M1 gates green; corpus + worksheets checked in as exit evidence — evidence: precision 1.000/recall 1.000, fix rate 5/5, 0 new violations
 
 ### Phase 6 — S4 ODRL demo (P1)
 
@@ -345,7 +345,7 @@ Exit criteria:
 - [x] Phase 2: tools + injector + stub/fake + `run` offline; golden failing trace in; seed-matrix diff green; README/10-A anchors fixed (anchors already conformant — no edits needed)
 - [x] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated — evidence: 67 passed, `check` seed42 golden exits 1 with steps [3, 4]
 - [x] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken — evidence: 95 passed, `fix: VERIFIED (exactly_once_mutation PASS, task PAID)` + `regression: 4/4 PASS`
-- [ ] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green
+- [x] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green — evidence: 105 passed, precision 1.000/recall 1.000, replay-fix 5/5 with 0 new violations
 - [ ] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided
 - [ ] Phase 7: packaging clean-install log; full CI matrix; cost sheet; runbook ×2 rehearsals; release tag + changelog; demo recorded; submitted
 

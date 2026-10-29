@@ -1,0 +1,1 @@
+{"charges":[{"amount":150,"charge_id":"ch_001","idempotency_key":"inv-9821-a3f","invoice_id":9821}],"docs":[],"invoices":[{"amount":150,"id":9821,"status":"PAID","vendor":"Acme Corp"}],"ledger_hash":"sha256:b75ef6e651193db562c5282735852054b5f9715cefdd3109ad782aee3c122927","record_versions":[],"run_id":"8de77b310aa0d397","schema_version":"env_state/v1"}

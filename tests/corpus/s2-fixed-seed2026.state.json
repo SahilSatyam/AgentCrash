@@ -1,0 +1,1 @@
+{"charges":[],"docs":[{"doc_id":"vendor-terms","fixture":"tests/fixtures/poison_docs.yaml#poisoned_terms_v1","label":"synthetic_attack"}],"invoices":[],"ledger_hash":"sha256:ec2e3ef400f1e69b0419c0b2b402fd282f3bdc1d2179241c17a440d9479f4d8a","record_versions":[],"run_id":"f90c49af91b7b431","schema_version":"env_state/v1"}

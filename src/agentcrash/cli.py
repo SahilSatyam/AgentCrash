@@ -24,9 +24,10 @@ from agentcrash.policy import (
     fetch_live_patch,
     load_patch_doc,
     load_policy,
-    reference_patch,
+    reference_patch_for,
     validate_patch_data,
 )
+from agentcrash.tools import READ_DOC, render_untrusted
 from agentcrash.tracer import compute_run_id, verify_chain
 from agentcrash.verifiers import (
     TraceCorruptError,
@@ -222,7 +223,39 @@ def cmd_run(argv: list[str]) -> int:
             f"status={summary['status']} "
             f"ledger_hash={summary['ledger_hash']} charges={summary['charges']}"
         )
+        for span in _retrieved_doc_spans(trace_out):
+            print(
+                f"doc {span['doc_id']} ({span['bytes']} bytes, "
+                f"untrusted_source=true, {span['source']}):"
+            )
+            print(render_untrusted(span["text"], span["source"]))
     return EXIT_RUNABORTED if summary["status"] == "runaway" else EXIT_OK
+
+
+def _retrieved_doc_spans(trace_path: str) -> list[dict[str, Any]]:
+    """Collect read_doc result spans for delimiter rendering (doc 11 S3)."""
+    try:
+        events = load_trace_events(trace_path)
+    except TraceCorruptError:
+        return []
+    spans: list[dict[str, Any]] = []
+    for event in events:
+        if event.get("tool") != READ_DOC:
+            continue
+        if event.get("detail", {}).get("phase") != "tool_result":
+            continue
+        data = event.get("detail", {}).get("data", {}) or {}
+        if "text" not in data:
+            continue
+        spans.append(
+            {
+                "doc_id": data.get("doc_id", "?"),
+                "text": str(data.get("text", "")),
+                "bytes": data.get("bytes", 0),
+                "source": str(data.get("fixture", "")),
+            }
+        )
+    return spans
 
 
 def _infer_scenario(trace_scenario: str) -> Path:
@@ -485,7 +518,7 @@ def cmd_diagnose(argv: list[str]) -> int:
                 file=sys.stderr,
             )
     if patch_doc is None:
-        patch_doc = reference_patch(run_id)
+        patch_doc = reference_patch_for(str(scenario.get("scenario", "")), run_id)
     try:
         validate_patch_data(patch_doc)
     except PolicyRejectedError as exc:
@@ -512,11 +545,28 @@ def cmd_diagnose(argv: list[str]) -> int:
         return fail("E_CONFIG", "read-only violation: inputs changed during diagnose", EXIT_USAGE)
 
     rule = patch_doc["patch"]["rules"][0]
-    print("diagnosis: blind retry_same on ambiguous charge_card timeout caused duplicate charge")
-    print(
-        f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
-        "(get_transaction_status) + require idempotency key"
-    )
+    scenario_id = str(scenario.get("scenario", ""))
+    if scenario_id == "poisoned_document":
+        print("diagnosis: agent acted on untrusted doc instruction without confirmation")
+        print(
+            f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
+            "(require confirmation above $100, summarize instead of acting)"
+        )
+    elif scenario_id == "concurrent_update":
+        print("diagnosis: blind write with a stale version overwrote the rival update")
+        print(
+            f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
+            "(re-read key_value_store by version before mutating writes)"
+        )
+    else:
+        print(
+            "diagnosis: blind retry_same on ambiguous charge_card timeout "
+            "caused duplicate charge"
+        )
+        print(
+            f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
+            "(get_transaction_status) + require idempotency key"
+        )
     print(f"patch={out_path} (policy_patch/v1, {len(patch_doc['patch']['rules'])} rule)")
     print(diff_policies(base_policy, new_policy))
     print(
@@ -646,7 +696,7 @@ def cmd_replay(argv: list[str]) -> int:
         if row["passed"] and not after_rows.get(row["id"], {}).get("passed")
     )
     invoices = new_state.get("invoices", [])
-    task_status = invoices[0].get("status", "?") if invoices else "?"
+    task_status = invoices[0].get("status", "?") if invoices else "n/a"
 
     regression: list[dict[str, Any]] = []
     if not args.no_regression:

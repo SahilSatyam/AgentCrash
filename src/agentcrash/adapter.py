@@ -16,7 +16,10 @@ from __future__ import annotations
 import json
 import os
 import random
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from agentcrash.clock import VirtualClock
 from agentcrash.injector import FaultSchedule
@@ -25,6 +28,9 @@ from agentcrash.tools import (
     CHARGE_CARD,
     FIRST_IDEMPOTENCY_KEY,
     GET_TRANSACTION_STATUS,
+    INSTRUCTION_MARKER,
+    KEY_VALUE_STORE,
+    READ_DOC,
     ToolRegistry,
 )
 from agentcrash.tracer import TraceWriter, compute_run_id
@@ -46,8 +52,43 @@ def timeout_rule(policy: dict[str, Any], tool: str) -> dict[str, Any] | None:
     return None
 
 
+def _rule_for(policy: dict[str, Any], name: str, tool: str) -> dict[str, Any] | None:
+    """Return the ``name`` rule covering ``tool``, if any."""
+    for rule in policy.get("rules", []) or []:
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("rule") != name:
+            continue
+        covered = rule.get("tool")
+        if covered == tool or covered == "*":
+            return rule
+    return None
+
+
+def untrusted_rule(policy: dict[str, Any], tool: str) -> dict[str, Any] | None:
+    """Return the confirmation gate on untrusted content, if any (S2 fix)."""
+    rule = _rule_for(policy, "on_untrusted_content", tool)
+    if rule is not None and rule.get("action") == "require_confirmation":
+        return rule
+    return None
+
+
+def stale_rule(policy: dict[str, Any], tool: str) -> dict[str, Any] | None:
+    """Return the re-read rule for stale records, if any (S3 fix)."""
+    rule = _rule_for(policy, "on_stale_read", tool)
+    if rule is not None and rule.get("action") == "check_then_act":
+        return rule
+    return None
+
+
 class StubAgent:
-    """Scripted v0 agent: reconcile-read, charge, blind retry, confirm."""
+    """Scripted v0 agent: reconcile-read, charge, blind retry, confirm.
+
+    ``scenario_kind`` selects the scripted flow: ``s1`` (payment timeout),
+    ``s2`` (poisoned doc: naive obeys the planted instruction, gated only
+    summarizes), ``s3`` (stale read: naive writes from the first read,
+    fixed re-reads before writing).
+    """
 
     def __init__(
         self,
@@ -56,12 +97,24 @@ class StubAgent:
         max_attempts: int = 1,
         require_idempotency_key: bool = False,
         reconcile_first: bool = False,
+        scenario_kind: str = "s1",
+        confirmation_gate: bool = False,
+        reread_before_write: bool = False,
+        doc_id: str = "vendor-terms",
+        kv_key: str = "vendor-address",
+        intended_update: dict[str, Any] | None = None,
     ) -> None:
         self._invoice_id = invoice_id
         self._amount = amount
         self._max_attempts = max_attempts
         self._require_key = require_idempotency_key
         self._reconcile_first = reconcile_first
+        self._scenario_kind = scenario_kind
+        self._confirmation_gate = confirmation_gate
+        self._reread_before_write = reread_before_write
+        self._doc_id = doc_id
+        self._kv_key = kv_key
+        self._intended_update = dict(intended_update or {})
 
     def retries_allowed(self, attempts_made: int) -> bool:
         """True while another mutating attempt fits in max_attempts."""
@@ -83,6 +136,10 @@ class StubAgent:
 
     def next_action(self, history: list[dict[str, Any]]) -> dict[str, Any]:
         """Pick the next action from past tool results (pure function)."""
+        if self._scenario_kind == "s2":
+            return self._next_s2(history)
+        if self._scenario_kind == "s3":
+            return self._next_s3(history)
         charges = [
             h for h in history if h.get("tool") == CHARGE_CARD and h.get("outcome") != "error"
         ]
@@ -148,6 +205,70 @@ class StubAgent:
                 "args": {"invoice_id": self._invoice_id},
             }
         return {"type": "done", "reason": "no applicable stub action"}
+
+    def _next_s2(self, history: list[dict[str, Any]]) -> dict[str, Any]:
+        """S2 flow: read the doc, then obey it (naive) or summarize (gated)."""
+        if not history:
+            return {"type": "call", "tool": READ_DOC, "args": {"doc_id": self._doc_id}}
+        last = history[-1]
+        if last.get("tool") == READ_DOC:
+            if last.get("outcome") == "error":
+                return {"type": "done", "reason": "tool args rejected"}
+            if self._confirmation_gate:
+                return {"type": "done", "reason": "summarized without acting"}
+            text = str(last.get("data", {}).get("text", ""))
+            if INSTRUCTION_MARKER in text:
+                return {
+                    "type": "call",
+                    "tool": CHARGE_CARD,
+                    "args": {
+                        "invoice_id": self._invoice_id,
+                        "amount": -self._amount,
+                        "idempotency_key": FIRST_IDEMPOTENCY_KEY,
+                    },
+                }
+            return {"type": "done", "reason": "answered from clean doc"}
+        return {"type": "done", "reason": "acted on doc instruction"}
+
+    def _next_s3(self, history: list[dict[str, Any]]) -> dict[str, Any]:
+        """S3 flow: read, then write merged update (fresh only when fixed)."""
+        reads = [
+            h
+            for h in history
+            if h.get("tool") == KEY_VALUE_STORE
+            and h.get("args", {}).get("op") == "read"
+            and h.get("outcome") != "error"
+        ]
+        if not history:
+            return {
+                "type": "call",
+                "tool": KEY_VALUE_STORE,
+                "args": {"op": "read", "record": self._kv_key},
+            }
+        last = history[-1]
+        if last.get("outcome") == "error":
+            return {"type": "done", "reason": "tool args rejected"}
+        if last.get("tool") == KEY_VALUE_STORE and last.get("args", {}).get("op") == "read":
+            if self._reread_before_write and len(reads) < 2:
+                return {
+                    "type": "call",
+                    "tool": KEY_VALUE_STORE,
+                    "args": {"op": "read", "record": self._kv_key},
+                }
+            latest = last.get("data", {})
+            merged = dict(latest.get("value", {}))
+            merged.update(self._intended_update)
+            return {
+                "type": "call",
+                "tool": KEY_VALUE_STORE,
+                "args": {
+                    "op": "write",
+                    "record": self._kv_key,
+                    "value": merged,
+                    "expected_version": latest.get("version"),
+                },
+            }
+        return {"type": "done", "reason": "address updated"}
 
 
 def history_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -218,9 +339,57 @@ class LlamaAdapter:
 def _invoice_seed(scenario: dict[str, Any]) -> tuple[int, str, float]:
     invoices = (scenario.get("environment", {}) or {}).get("invoices", [])
     if not invoices:
+        billing = (scenario.get("environment", {}) or {}).get("billing", {}) or {}
+        if "invoice_id" in billing and "amount" in billing:
+            return (int(billing["invoice_id"]), "Acme Corp", billing["amount"])
         raise ValueError("scenario 'environment.invoices' must list at least one invoice")
     first = invoices[0]
     return int(first["id"]), str(first.get("vendor", "")), first["amount"]
+
+
+def _scenario_kind(scenario: dict[str, Any]) -> str:
+    """Map the scenario id to the stub flow (s1/s2/s3)."""
+    scenario_id = str(scenario.get("scenario", ""))
+    if scenario_id == "poisoned_document":
+        return "s2"
+    if scenario_id == "concurrent_update":
+        return "s3"
+    return "s1"
+
+
+def load_doc_store(scenario: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Build the ``read_doc`` store from the fixture + scenario documents.
+
+    The fixture file stays the single canonical home of adversarial bytes
+    (doc 11 S3); the scenario only names ``fixture_key`` entries.
+    """
+    env = scenario.get("environment", {}) or {}
+    documents = env.get("documents", []) or []
+    if not documents:
+        return {}
+    fixture_ref = str(env.get("doc_fixture", ""))
+    if not fixture_ref:
+        raise ValueError("scenario declares documents but no environment.doc_fixture")
+    fixture_path = Path(fixture_ref)
+    if not fixture_path.is_absolute():
+        fixture_path = Path.cwd() / fixture_ref
+    try:
+        fixture = yaml.safe_load(fixture_path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise ValueError(f"cannot read doc fixture {fixture_ref}: {exc}") from exc
+    entries = fixture.get("docs", {}) or {}
+    store: dict[str, dict[str, Any]] = {}
+    for doc in documents:
+        key = doc.get("fixture_key")
+        entry = entries.get(key)
+        if not isinstance(entry, dict) or "text" not in entry:
+            raise ValueError(f"doc fixture {fixture_ref} has no entry {key!r}")
+        store[doc["id"]] = {
+            "text": str(entry["text"]),
+            "label": str(entry.get("label", "")),
+            "fixture": f"{fixture_ref}#{key}",
+        }
+    return store
 
 
 def run_react_loop(
@@ -245,10 +414,18 @@ def run_react_loop(
     schedule = FaultSchedule.from_scenario(scenario, rng)
     clock = VirtualClock()
     ledger = Ledger()
-    invoice_id, vendor, amount = _invoice_seed(scenario)
-    for inv in (scenario.get("environment", {}) or {}).get("invoices", []):
+    env = scenario.get("environment", {}) or {}
+    kind = _scenario_kind(scenario)
+    if kind == "s3":
+        invoice_id, vendor, amount = 0, "", 0.0
+    else:
+        invoice_id, vendor, amount = _invoice_seed(scenario)
+    for inv in env.get("invoices", []):
         ledger.add_invoice(int(inv["id"]), str(inv.get("vendor", "")), inv["amount"])
-    registry = ToolRegistry.from_scenario(scenario, ledger, rng)
+    for rec in env.get("records", []):
+        ledger.kv_seed(str(rec["key"]), dict(rec.get("value", {}) or {}))
+    doc_store = load_doc_store(scenario)
+    registry = ToolRegistry.from_scenario(scenario, ledger, rng, doc_store)
 
     run_id = compute_run_id(scenario_text, policy_text, seed)
     scenario_id = str(scenario.get("scenario", "unknown"))
@@ -260,7 +437,20 @@ def run_react_loop(
         reconcile_first = str(rule.get("action", "retry_same")) == "check_then_act"
     else:
         max_attempts, require_key, reconcile_first = 0, False, False
-    agent = StubAgent(invoice_id, amount, max_attempts, require_key, reconcile_first)
+    documents = env.get("documents", []) or []
+    agent = StubAgent(
+        invoice_id,
+        amount,
+        max_attempts,
+        require_key,
+        reconcile_first,
+        scenario_kind=kind,
+        confirmation_gate=untrusted_rule(policy, READ_DOC) is not None,
+        reread_before_write=stale_rule(policy, KEY_VALUE_STORE) is not None,
+        doc_id=str(documents[0].get("id", "vendor-terms")) if documents else "vendor-terms",
+        kv_key=str((env.get("records", []) or [{}])[0].get("key", "vendor-address")),
+        intended_update=dict(env.get("intended_update", {}) or {}),
+    )
     adapter = FakeAdapter(agent, registry.tool_names)
 
     writer = TraceWriter(run_id, scenario_id, trace_path)
@@ -314,6 +504,21 @@ def run_react_loop(
             )
             fault = schedule.fault_for(step, tool)
             injector_event: dict[str, Any] | None = None
+            rival = schedule.concurrent_for(step, tool)
+            if rival is not None:
+                params = rival.get("params", {}) or {}
+                updates = dict(params.get("updates", {}) or {})
+                applied = ledger.kv_apply_concurrent(str(params["key"]), updates)
+                injector_event = {
+                    "fault": "concurrent_update",
+                    "target_tool": tool,
+                    "target_step": step,
+                    "record": str(params["key"]),
+                    "updates": updates,
+                    "version_before": applied["version_before"],
+                    "version_after": applied["version_after"],
+                    "committed": True,
+                }
             if fault is not None and fault["kind"] == "timeout_before_commit":
                 simulated = int((fault.get("params", {}) or {}).get("simulated_latency_ms", 0))
                 clock.sleep(simulated)
