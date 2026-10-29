@@ -99,6 +99,27 @@ agentcrash replay --trace traces/latest.jsonl --policy policy_patch.json
 - **Agent & Diagnostic Models**: Meta Llama models via standard API adapter.
 - **Trace Format**: JSONL trace schema.
 
+## Setup
+
+Prerequisites: WSL Ubuntu-24.04, Python 3.11+, `uv`. Full walkthrough —
+setup, first failing-then-passing run, all scenarios, troubleshooting — is in
+the [Setup and Startup Guide](docs/setup.md).
+
+```bash
+git clone https://github.com/SahilSatyam/AgentCrash.git && cd AgentCrash
+git checkout feat/all-phases   # implementation branch (until merged to main)
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
+pytest -q   # 129 passed
+```
+
+Then start the demo loop offline (no API key needed):
+
+```bash
+python -m agentcrash run --scenario timeout_retry --model fake --seed 42
+python -m agentcrash check --trace traces/43e3064f37f779fe.jsonl
+```
+
 ## Docs
 
 See [`docs/`](docs/) — start with the [System Overview](docs/overview.md).
