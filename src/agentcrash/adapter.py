@@ -9,6 +9,9 @@ only while the invoice is still UNPAID. Both the stub and the fake model adapter
 behind ``complete(messages, tools, timeout_s)``; the live Llama transport
 is stubbed to refuse without a key and never touches the network, so every
 run is fixture-backed and deterministic. No wall-clock calls anywhere.
+S4 (``odrl_convert*``) reuses the same loop with the scripted converter
+(``parse_policy`` → ``validate_odrl`` → ``save_odrl``); ``--model`` is
+ignored for those scenarios.
 """
 
 from __future__ import annotations
@@ -30,7 +33,10 @@ from agentcrash.tools import (
     GET_TRANSACTION_STATUS,
     INSTRUCTION_MARKER,
     KEY_VALUE_STORE,
+    PARSE_POLICY,
     READ_DOC,
+    SAVE_ODRL,
+    VALIDATE_ODRL,
     ToolRegistry,
 )
 from agentcrash.tracer import TraceWriter, compute_run_id
@@ -87,7 +93,8 @@ class StubAgent:
     ``scenario_kind`` selects the scripted flow: ``s1`` (payment timeout),
     ``s2`` (poisoned doc: naive obeys the planted instruction, gated only
     summarizes), ``s3`` (stale read: naive writes from the first read,
-    fixed re-reads before writing).
+    fixed re-reads before writing), ``s4`` (ODRL convert: naive parses
+    sloppy and saves blind; strict converts, validates, then saves fresh).
     """
 
     def __init__(
@@ -103,6 +110,8 @@ class StubAgent:
         doc_id: str = "vendor-terms",
         kv_key: str = "vendor-address",
         intended_update: dict[str, Any] | None = None,
+        strict_convert: bool = False,
+        odrl_record: str = "odrl-policy-1",
     ) -> None:
         self._invoice_id = invoice_id
         self._amount = amount
@@ -115,6 +124,8 @@ class StubAgent:
         self._doc_id = doc_id
         self._kv_key = kv_key
         self._intended_update = dict(intended_update or {})
+        self._strict_convert = strict_convert
+        self._odrl_record = odrl_record
 
     def retries_allowed(self, attempts_made: int) -> bool:
         """True while another mutating attempt fits in max_attempts."""
@@ -140,6 +151,8 @@ class StubAgent:
             return self._next_s2(history)
         if self._scenario_kind == "s3":
             return self._next_s3(history)
+        if self._scenario_kind == "s4":
+            return self._next_s4(history)
         charges = [
             h for h in history if h.get("tool") == CHARGE_CARD and h.get("outcome") != "error"
         ]
@@ -270,6 +283,76 @@ class StubAgent:
             }
         return {"type": "done", "reason": "address updated"}
 
+    def _parsed_odrl(self, history: list[dict[str, Any]]) -> dict[str, Any]:
+        """Return the candidate ODRL doc from the parse step (pure lookup)."""
+        for entry in history:
+            if entry.get("tool") == PARSE_POLICY and entry.get("outcome") != "error":
+                odrl = (entry.get("data") or {}).get("odrl")
+                if isinstance(odrl, dict):
+                    return dict(odrl)
+        return {}
+
+    def _next_s4(self, history: list[dict[str, Any]]) -> dict[str, Any]:
+        """S4 flow: parse, then validate (strict only), then save fresh."""
+        mode = "strict" if self._strict_convert else "sloppy"
+        if not history:
+            return {
+                "type": "call",
+                "tool": PARSE_POLICY,
+                "args": {"doc_id": self._doc_id, "mode": mode},
+            }
+        last = history[-1]
+        if last.get("outcome") == "error":
+            return {"type": "done", "reason": "tool args rejected"}
+        if last.get("tool") == PARSE_POLICY:
+            if self._strict_convert:
+                return {
+                    "type": "call",
+                    "tool": VALIDATE_ODRL,
+                    "args": {"odrl": self._parsed_odrl(history)},
+                }
+            return {
+                "type": "call",
+                "tool": SAVE_ODRL,
+                "args": {"op": "read", "record": self._odrl_record},
+            }
+        if last.get("tool") == VALIDATE_ODRL:
+            if last.get("data", {}).get("valid") is not True:
+                return {"type": "done", "reason": "odrl invalid, refusing to save"}
+            return {
+                "type": "call",
+                "tool": SAVE_ODRL,
+                "args": {"op": "read", "record": self._odrl_record},
+            }
+        if last.get("tool") == SAVE_ODRL and last.get("args", {}).get("op") == "read":
+            reads = [
+                h
+                for h in history
+                if h.get("tool") == SAVE_ODRL
+                and h.get("args", {}).get("op") == "read"
+                and h.get("outcome") != "error"
+            ]
+            if self._reread_before_write and len(reads) < 2:
+                return {
+                    "type": "call",
+                    "tool": SAVE_ODRL,
+                    "args": {"op": "read", "record": self._odrl_record},
+                }
+            latest = last.get("data", {})
+            merged = dict(latest.get("value", {}))
+            merged.update(self._parsed_odrl(history))
+            return {
+                "type": "call",
+                "tool": SAVE_ODRL,
+                "args": {
+                    "op": "write",
+                    "record": self._odrl_record,
+                    "value": merged,
+                    "expected_version": latest.get("version"),
+                },
+            }
+        return {"type": "done", "reason": "odrl saved"}
+
 
 def history_from_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Project adapter messages back to tool-result history entries."""
@@ -348,13 +431,20 @@ def _invoice_seed(scenario: dict[str, Any]) -> tuple[int, str, float]:
 
 
 def _scenario_kind(scenario: dict[str, Any]) -> str:
-    """Map the scenario id to the stub flow (s1/s2/s3)."""
+    """Map the scenario id to the stub flow (s1/s2/s3/s4)."""
     scenario_id = str(scenario.get("scenario", ""))
     if scenario_id == "poisoned_document":
         return "s2"
     if scenario_id == "concurrent_update":
         return "s3"
+    if scenario_id in ("odrl_convert", "odrl_convert_poisoned", "odrl_convert_concurrent"):
+        return "s4"
     return "s1"
+
+
+def is_odrl_scenario(scenario: dict[str, Any]) -> bool:
+    """True for S4 converter scenarios (``--model`` is ignored for these)."""
+    return _scenario_kind(scenario) == "s4"
 
 
 def load_doc_store(scenario: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -392,6 +482,50 @@ def load_doc_store(scenario: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return store
 
 
+def load_nl_store(scenario: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Build the ``parse_policy`` store from the NL fixture + scenario docs.
+
+    Mirrors :func:`load_doc_store`: the fixture file stays the single
+    canonical home of NL bytes (doc 11 S3); the scenario only names
+    ``fixture_key`` entries. Each entry must carry ``naive_odrl`` (sloppy
+    converter output) and ``expected_odrl`` (strict converter output).
+    """
+    env = scenario.get("environment", {}) or {}
+    documents = env.get("nl_docs", []) or []
+    if not documents:
+        return {}
+    fixture_ref = str(env.get("nl_fixture", ""))
+    if not fixture_ref:
+        raise ValueError("scenario declares nl_docs but no environment.nl_fixture")
+    fixture_path = Path(fixture_ref)
+    if not fixture_path.is_absolute():
+        fixture_path = Path.cwd() / fixture_ref
+    try:
+        fixture = yaml.safe_load(fixture_path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:
+        raise ValueError(f"cannot read NL fixture {fixture_ref}: {exc}") from exc
+    entries = fixture.get("docs", {}) or {}
+    store: dict[str, dict[str, Any]] = {}
+    for doc in documents:
+        key = doc.get("fixture_key")
+        entry = entries.get(key)
+        if (
+            not isinstance(entry, dict)
+            or "nl" not in entry
+            or "naive_odrl" not in entry
+            or "expected_odrl" not in entry
+        ):
+            raise ValueError(f"NL fixture {fixture_ref} has no ODRL entry {key!r}")
+        store[doc["id"]] = {
+            "text": str(entry["nl"]),
+            "label": str(entry.get("label", "")),
+            "fixture": f"{fixture_ref}#{key}",
+            "naive_odrl": entry["naive_odrl"],
+            "expected_odrl": entry["expected_odrl"],
+        }
+    return store
+
+
 def run_react_loop(
     *,
     scenario: dict[str, Any],
@@ -416,7 +550,7 @@ def run_react_loop(
     ledger = Ledger()
     env = scenario.get("environment", {}) or {}
     kind = _scenario_kind(scenario)
-    if kind == "s3":
+    if kind in ("s3", "s4"):
         invoice_id, vendor, amount = 0, "", 0.0
     else:
         invoice_id, vendor, amount = _invoice_seed(scenario)
@@ -424,8 +558,11 @@ def run_react_loop(
         ledger.add_invoice(int(inv["id"]), str(inv.get("vendor", "")), inv["amount"])
     for rec in env.get("records", []):
         ledger.kv_seed(str(rec["key"]), dict(rec.get("value", {}) or {}))
+    for rec in env.get("odrl_records", []):
+        ledger.kv_seed(str(rec["key"]), dict(rec.get("value", {}) or {}))
     doc_store = load_doc_store(scenario)
-    registry = ToolRegistry.from_scenario(scenario, ledger, rng, doc_store)
+    nl_store = load_nl_store(scenario)
+    registry = ToolRegistry.from_scenario(scenario, ledger, rng, doc_store, nl_store)
 
     run_id = compute_run_id(scenario_text, policy_text, seed)
     scenario_id = str(scenario.get("scenario", "unknown"))
@@ -438,6 +575,13 @@ def run_react_loop(
     else:
         max_attempts, require_key, reconcile_first = 0, False, False
     documents = env.get("documents", []) or []
+    nl_docs = env.get("nl_docs", []) or []
+    if kind == "s4" and nl_docs:
+        read_doc_id = str(nl_docs[0].get("id", "access-request-1"))
+    elif documents:
+        read_doc_id = str(documents[0].get("id", "vendor-terms"))
+    else:
+        read_doc_id = "vendor-terms"
     agent = StubAgent(
         invoice_id,
         amount,
@@ -446,10 +590,13 @@ def run_react_loop(
         reconcile_first,
         scenario_kind=kind,
         confirmation_gate=untrusted_rule(policy, READ_DOC) is not None,
-        reread_before_write=stale_rule(policy, KEY_VALUE_STORE) is not None,
-        doc_id=str(documents[0].get("id", "vendor-terms")) if documents else "vendor-terms",
+        reread_before_write=stale_rule(policy, KEY_VALUE_STORE) is not None
+        or stale_rule(policy, SAVE_ODRL) is not None,
+        doc_id=read_doc_id,
         kv_key=str((env.get("records", []) or [{}])[0].get("key", "vendor-address")),
         intended_update=dict(env.get("intended_update", {}) or {}),
+        strict_convert=untrusted_rule(policy, PARSE_POLICY) is not None,
+        odrl_record=str((env.get("odrl_records", []) or [{}])[0].get("key", "odrl-policy-1")),
     )
     adapter = FakeAdapter(agent, registry.tool_names)
 

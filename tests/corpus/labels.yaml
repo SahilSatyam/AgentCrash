@@ -1,5 +1,5 @@
 schema_version: corpus/v1
-notes: 'Labelled S1-S3 corpus: naive runs expect FAIL (fault + naive policy), fixed
+notes: 'Labelled S1-S4 corpus: naive runs expect FAIL (fault + naive policy), fixed
   runs expect PASS (same fault, fixed policy). Seeds cover the doc 10 S6 matrix.'
 items:
 - file: s1-naive-seed1.jsonl
@@ -181,6 +181,42 @@ items:
   scenario: concurrent_update
   seed: 2026
   policy: policies/fixed-stale-read.yaml
+  expected: PASS
+- file: s4-clean-naive-seed42.jsonl
+  state: s4-clean-naive-seed42.state.json
+  scenario: odrl_convert
+  seed: 42
+  policy: policies/default.yaml
+  expected: FAIL
+- file: s4-clean-fixed-seed42.jsonl
+  state: s4-clean-fixed-seed42.state.json
+  scenario: odrl_convert
+  seed: 42
+  policy: policies/fixed-odrl-convert.yaml
+  expected: PASS
+- file: s4-poisoned-naive-seed42.jsonl
+  state: s4-poisoned-naive-seed42.state.json
+  scenario: odrl_convert_poisoned
+  seed: 42
+  policy: policies/default.yaml
+  expected: FAIL
+- file: s4-poisoned-fixed-seed42.jsonl
+  state: s4-poisoned-fixed-seed42.state.json
+  scenario: odrl_convert_poisoned
+  seed: 42
+  policy: policies/fixed-odrl-convert.yaml
+  expected: PASS
+- file: s4-concurrent-naive-seed42.jsonl
+  state: s4-concurrent-naive-seed42.state.json
+  scenario: odrl_convert_concurrent
+  seed: 42
+  policy: policies/default.yaml
+  expected: FAIL
+- file: s4-concurrent-fixed-seed42.jsonl
+  state: s4-concurrent-fixed-seed42.state.json
+  scenario: odrl_convert_concurrent
+  seed: 42
+  policy: policies/fixed-odrl-convert.yaml
   expected: PASS
 canonical:
 - trace: s1-naive-seed42.jsonl

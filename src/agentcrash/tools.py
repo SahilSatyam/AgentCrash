@@ -5,7 +5,11 @@ advances only the harness VirtualClock (ADR-003, ADR-006). Unknown tools and
 unexpected args are rejected and recorded (``outcome: error``) — never
 executed. ``read_doc`` returns seeded fixture bytes tagged
 ``untrusted_source`` (doc 11 S3); ``key_value_store`` does versioned
-reads/writes. No wall-clock, no network, no model calls.
+reads/writes. S4 adds the scripted converter chain: ``parse_policy``
+(fixture-backed NL→ODRL, sloppy vs strict mode), ``validate_odrl``
+(frozen ODRL subset via :mod:`agentcrash.odrl`), and ``save_odrl``
+(versioned writes on the same record store). No wall-clock, no network,
+no model calls.
 """
 
 from __future__ import annotations
@@ -14,11 +18,15 @@ from typing import Any
 
 from agentcrash.clock import VirtualClock
 from agentcrash.ledger import Ledger
+from agentcrash.odrl import ODRL_SUBSET_ID, validate_odrl_subset
 
 CHARGE_CARD = "charge_card"
 GET_TRANSACTION_STATUS = "get_transaction_status"
 READ_DOC = "read_doc"
 KEY_VALUE_STORE = "key_value_store"
+PARSE_POLICY = "parse_policy"
+VALIDATE_ODRL = "validate_odrl"
+SAVE_ODRL = "save_odrl"
 
 FIRST_IDEMPOTENCY_KEY = "inv-9821-a3f"
 
@@ -71,20 +79,36 @@ def _validate_args(name: str, args: dict[str, Any]) -> str | None:
         if not isinstance(args.get("doc_id"), str) or not args["doc_id"]:
             return "read_doc requires a non-empty string doc_id"
         return None
-    if name == KEY_VALUE_STORE:
+    if name == PARSE_POLICY:
+        unknown = sorted(set(args) - {"doc_id", "mode"})
+        if unknown:
+            return f"unknown arg(s) for parse_policy: {', '.join(unknown)}"
+        if not isinstance(args.get("doc_id"), str) or not args["doc_id"]:
+            return "parse_policy requires a non-empty string doc_id"
+        if args.get("mode", "sloppy") not in ("sloppy", "strict"):
+            return "parse_policy mode must be 'sloppy' or 'strict'"
+        return None
+    if name == VALIDATE_ODRL:
+        unknown = sorted(set(args) - {"odrl"})
+        if unknown:
+            return f"unknown arg(s) for validate_odrl: {', '.join(unknown)}"
+        if not isinstance(args.get("odrl"), dict):
+            return "validate_odrl requires an object odrl"
+        return None
+    if name in (KEY_VALUE_STORE, SAVE_ODRL):
         unknown = sorted(set(args) - {"op", "record", "value", "expected_version"})
         if unknown:
-            return f"unknown arg(s) for key_value_store: {', '.join(unknown)}"
+            return f"unknown arg(s) for {name}: {', '.join(unknown)}"
         if args.get("op") not in ("read", "write"):
-            return "key_value_store requires op 'read' or 'write'"
+            return f"{name} requires op 'read' or 'write'"
         if not isinstance(args.get("record"), str) or not args["record"]:
-            return "key_value_store requires a non-empty string record"
+            return f"{name} requires a non-empty string record"
         if args["op"] == "write":
             if not isinstance(args.get("value"), dict):
-                return "key_value_store write requires an object value"
+                return f"{name} write requires an object value"
             expected = args.get("expected_version")
             if expected is not None and type(expected) is not int:
-                return "key_value_store expected_version must be an integer or null"
+                return f"{name} expected_version must be an integer or null"
         return None
     return f"tool {name!r} is not implemented in v0"
 
@@ -104,11 +128,13 @@ class ToolRegistry:
         ledger: Ledger,
         rng: Any | None = None,
         doc_store: dict[str, dict[str, Any]] | None = None,
+        nl_store: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._specs = {spec["name"]: dict(spec) for spec in tool_specs}
         self._ledger = ledger
         self._rng = rng
         self._docs = dict(doc_store or {})
+        self._nl_docs = dict(nl_store or {})
 
     @classmethod
     def from_scenario(
@@ -117,9 +143,10 @@ class ToolRegistry:
         ledger: Ledger,
         rng: Any | None = None,
         doc_store: dict[str, dict[str, Any]] | None = None,
+        nl_store: dict[str, dict[str, Any]] | None = None,
     ) -> ToolRegistry:
         """Build a registry from a parsed scenario.yaml dict."""
-        return cls(scenario.get("tools", []), ledger, rng, doc_store)
+        return cls(scenario.get("tools", []), ledger, rng, doc_store, nl_store)
 
     @property
     def tool_names(self) -> list[str]:
@@ -218,7 +245,54 @@ class ToolRegistry:
                     "has_instruction": INSTRUCTION_MARKER in text,
                 },
             }
-        if name == KEY_VALUE_STORE:
+        if name == PARSE_POLICY:
+            entry = self._nl_docs.get(args["doc_id"])
+            if entry is None:
+                return {
+                    "outcome": "error",
+                    "latency_ms": 0,
+                    "error": f"unknown doc_id {args['doc_id']!r}",
+                    "data": {},
+                }
+            clock.sleep(latency_ms)
+            mode = str(args.get("mode", "sloppy"))
+            odrl = dict(entry["expected_odrl"] if mode == "strict" else entry["naive_odrl"])
+            text = str(entry.get("text", ""))
+            self._ledger.record_doc(
+                args["doc_id"], str(entry.get("fixture", "")), str(entry.get("label", ""))
+            )
+            outcome = "timeout" if latency_ms > timeout_ms else "success"
+            return {
+                "outcome": outcome,
+                "latency_ms": latency_ms,
+                "error": None,
+                "data": {
+                    "doc_id": args["doc_id"],
+                    "text": text,
+                    "bytes": len(text.encode("utf-8")),
+                    "untrusted_source": True,
+                    "fixture": str(entry.get("fixture", "")),
+                    "label": str(entry.get("label", "")),
+                    "has_instruction": INSTRUCTION_MARKER in text,
+                    "mode": mode,
+                    "odrl": odrl,
+                },
+            }
+        if name == VALIDATE_ODRL:
+            valid, errors = validate_odrl_subset(args["odrl"])
+            clock.sleep(latency_ms)
+            outcome = "timeout" if latency_ms > timeout_ms else "success"
+            return {
+                "outcome": outcome,
+                "latency_ms": latency_ms,
+                "error": None,
+                "data": {
+                    "valid": valid,
+                    "errors": errors,
+                    "checked": ODRL_SUBSET_ID,
+                },
+            }
+        if name in (KEY_VALUE_STORE, SAVE_ODRL):
             name_ = args["record"]
             if args["op"] == "read":
                 record = self._ledger.kv_read(name_)

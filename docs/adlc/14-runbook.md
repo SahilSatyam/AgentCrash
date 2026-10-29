@@ -110,6 +110,50 @@ If replay reports `FIX REJECTED` (still failing) or a regression, say so plainly
 the trace, and fall back to the pre-recorded golden trace (§7). Never re-run diagnose
 in a loop on stage — one attempt, then the golden backup.
 
+## 5B. Journey 5 — ODRL convert encore (S4 dry run, no model key)
+
+The S4 encore reuses the same loop for a model-free policy conversion:
+the scripted converter runs `parse_policy → validate_odrl → save_odrl`
+into a versioned store, and `--model` is ignored (fake adapter, offline).
+Unaided dry run — all three fault variants, nothing written:
+
+```bash
+# Step J5-1 — Dry-run the clean variant (sloppy parse, invalid ODRL saved)
+python -m agentcrash run --scenario odrl_convert --dry-run
+# Expect: tools parse_policy, validate_odrl, save_odrl; faults: [];
+#         "--model llama-3.3-70b ignored for odrl_convert (scripted converter)"
+
+# Step J5-2 — Dry-run the poisoned-sentence variant (attacker grant planted)
+python -m agentcrash run --scenario odrl_convert_poisoned --dry-run
+# Expect: faults list the inert poisoned_doc entry for parse_policy
+
+# Step J5-3 — Dry-run the concurrent-edit variant (rival writer at step 4)
+python -m agentcrash run --scenario odrl_convert_concurrent --dry-run
+# Expect: faults list the concurrent_update entry on save_odrl at step 4
+```
+
+Live encore (still no key — the converter never calls a model):
+
+```bash
+# Step J5-4 — Run clean pre-fix, then grade it
+python -m agentcrash run --scenario odrl_convert --seed 42
+python -m agentcrash check --trace traces/<run_id>.jsonl
+# Expect: [FAIL] odrl_valid (permission[0] is missing required 'target');
+#         the other three S4 verifiers PASS
+
+# Step J5-5 — Diagnose and replay with the fixed converter policy
+python -m agentcrash diagnose --trace traces/<run_id>.jsonl --output s4-patch.json
+python -m agentcrash replay --trace traces/<run_id>.jsonl \
+  --policy policies/fixed-odrl-convert.yaml
+# Expect: fix: VERIFIED (all four S4 verifiers PASS)
+```
+
+Pinned goldens for all three variants (naive FAIL + fixed PASS at seed 42)
+live in `tests/corpus/s4-*-seed42.jsonl` with labels in
+`tests/corpus/labels.yaml`. They are deliberately NOT in `traces/golden/`:
+that directory is replay's live `--regression` input, and pre-fix S4 traces
+re-run under non-S4 policies would red-flag the S1–S3 regression gates.
+
 ## 6. Collect traces (evidence discipline)
 
 ```bash

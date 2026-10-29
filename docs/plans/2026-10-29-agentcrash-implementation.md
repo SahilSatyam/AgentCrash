@@ -263,29 +263,35 @@ Exit criteria:
 
 Objective: model-free 5-minute demo reusing the same loop (Journey 5).
 
-Scope: scripted ReAct (`parse_policy → validate_odrl → save_odrl` versioned store), v0.2.1 pin (ODRL 2.2 JSON-LD `Set`/`Offer`/`Agreement`, frozen pySHACL subset — `pyshacl` pinned dep — max 8 correct attempts), 4 verifiers (`odrl_valid`, `no_attacker_grant`, `exactly_once_save`, `fresh_write_only`), 3 fault variants, synthetic NL fixtures.
+Scope: scripted ReAct (`parse_policy → validate_odrl → save_odrl` versioned store), ODRL 2.2 JSON-LD `Set`/`Offer`/`Agreement` (hand-rolled frozen subset `odrl-subset-frozen-v1`, NOT pyshacl — deviation: install weight; see box below), 4 verifiers (`odrl_valid`, `no_attacker_grant`, `exactly_once_save`, `fresh_write_only`), 3 fault variants, synthetic NL fixtures.
 
 Tasks:
 
-- [ ] Implement S4 synthetic tools + scripted converter (no model; `--model` ignored for `odrl_convert`)
-- [ ] Author S4 fixtures (basic NL policies + expected ODRL JSON-LD, poisoned-sentence and concurrent-edit variants)
-- [ ] Implement 4 S4 verifiers + goldens; add Journey-5 steps to runbook (doc 14)
+- [x] Implement S4 synthetic tools + scripted converter (no model; `--model` ignored for `odrl_convert`) — evidence: `tools.py` parse/validate/save branches, `adapter.py` s4 flow + `is_odrl_scenario`, CLI ignored-note; 12 S4 tests green
+- [x] Author S4 fixtures (basic NL policies + expected ODRL JSON-LD, poisoned-sentence and concurrent-edit variants) — evidence: `tests/fixtures/odrl_nl.yaml` (3 entries, naive+expected ODRL each), 3 scenario dirs, `policies/fixed-odrl-convert.yaml`
+- [x] Implement 4 S4 verifiers + goldens; add Journey-5 steps to runbook (doc 14) — evidence: `verifiers.py` OdrlValid/NoAttackerGrant/ExactlyOnceSave (+FreshWriteOnly covers save_odrl), 6 corpus goldens + labels, runbook §5B
+
+Deviations from the plan as written (accepted at implementation):
+
+- No `pyshacl` dependency: `src/agentcrash/odrl.py` hand-rolls the frozen subset (install weight avoided; `uv.lock` untouched).
+- Goldens live in `tests/corpus/s4-*-seed42.*` (not `traces/golden/`): that directory is replay's live `--regression` input, and pre-fix S4 traces re-run under non-S4 policies would red-flag the S1–S3 regression gates (Phase 5 set the `tests/corpus/` precedent for scenario goldens).
+- Attacker principal is `attacker-client` (not an email): trace write-time redaction (doc 11 S5–S6) scrubs email shapes, which would erase the verifier evidence.
 
 Dependencies: Phase 5 (loop + regression harness); S4 ported docs from Phase 0.
 
 Deliverables:
 
-- [ ] `odrl_convert` scenario + fixtures + verifiers + goldens
+- [x] `odrl_convert` scenario + fixtures + verifiers + goldens — evidence: 3 scenario dirs + fixture + fixed policy + 6 corpus files, all committed
 
 Acceptance / testing:
 
-- [ ] All 3 fault variants reproduce pre-fix and replay green; S4 excluded from multi-model table; offline gate holds (no key)
+- [x] All 3 fault variants reproduce pre-fix and replay green; S4 excluded from multi-model table; offline gate holds (no key) — evidence: clean FAIL odrl_valid / poisoned FAIL no_attacker_grant / concurrent FAIL fresh_write_only; per-variant diagnose patch replays VERIFIED; `--model bogus` run exits 0
 
-Risks: `pyshacl` weight/lockfile churn — mitigate by pinning; hand-rolled subset only if install cost bites.
+Risks: `pyshacl` weight/lockfile churn — mitigated by hand-rolled subset (no new dep).
 
 Exit criteria:
 
-- [ ] Unaided Journey-5 dry run passes; S4 fixtures included in published corpus plan
+- [x] Unaided Journey-5 dry run passes; S4 fixtures included in published corpus plan — evidence: §5B J5-1..J5-3 dry-runs green, 6 S4 items in `tests/corpus/labels.yaml` (metrics n=36, precision/recall 1.000)
 
 ### Phase 7 — Ship it (P0)
 
@@ -346,7 +352,7 @@ Exit criteria:
 - [x] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated — evidence: 67 passed, `check` seed42 golden exits 1 with steps [3, 4]
 - [x] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken — evidence: 95 passed, `fix: VERIFIED (exactly_once_mutation PASS, task PAID)` + `regression: 4/4 PASS`
 - [x] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green — evidence: 105 passed, precision 1.000/recall 1.000, replay-fix 5/5 with 0 new violations
-- [ ] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided
+- [x] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided — evidence: 12 S4 tests green, J5-1..J5-3 dry-runs green, full suite green
 - [ ] Phase 7: packaging clean-install log; full CI matrix; cost sheet; runbook ×2 rehearsals; release tag + changelog; demo recorded; submitted
 
 ## I. Recommended First Implementation Step

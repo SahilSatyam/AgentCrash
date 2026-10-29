@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from agentcrash import __version__
-from agentcrash.adapter import DEFAULT_MODEL, run_react_loop
+from agentcrash.adapter import DEFAULT_MODEL, is_odrl_scenario, run_react_loop
 from agentcrash.injector import FaultSchedule, UnknownFaultError
 from agentcrash.policy import (
     PolicyError,
@@ -151,6 +151,7 @@ def cmd_run(argv: list[str]) -> int:
         return fail("E_CONFIG", str(exc), EXIT_USAGE)
     seed = args.seed if args.seed is not None else file_seed
     max_steps = args.max_steps if args.max_steps is not None else file_steps
+    scripted = is_odrl_scenario(scenario)
     run_id = compute_run_id(scenario_text, policy_text, seed)
     trace_out = args.trace_out or str(Path("traces") / f"{run_id}.jsonl")
     state_out = args.state_out or str(Path("reports") / f"{run_id}.state.json")
@@ -177,6 +178,8 @@ def cmd_run(argv: list[str]) -> int:
             print(f"tools: {', '.join(str(t) for t in plan['tools'])}")
             print(f"faults: {plan['faults']}")
             print(f"policy: {plan['policy']} model: {args.model} (fake offline)")
+            if scripted:
+                print(f"--model {args.model} ignored for odrl_convert (scripted converter)")
             print(f"trace: {trace_out} (dry-run: nothing written)")
         return EXIT_OK
 
@@ -219,6 +222,8 @@ def cmd_run(argv: list[str]) -> int:
             f"run_id={summary['run_id']} scenario={summary['scenario']} "
             f"steps={summary['steps']} trace={summary['trace_path']}"
         )
+        if scripted:
+            print(f"--model {args.model} ignored for odrl_convert (scripted converter)")
         print(
             f"status={summary['status']} "
             f"ledger_hash={summary['ledger_hash']} charges={summary['charges']}"
@@ -557,6 +562,18 @@ def cmd_diagnose(argv: list[str]) -> int:
         print(
             f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
             "(re-read key_value_store by version before mutating writes)"
+        )
+    elif scenario_id in ("odrl_convert", "odrl_convert_poisoned"):
+        print("diagnosis: sloppy conversion saved an unvalidated ODRL document")
+        print(
+            f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
+            "(strict parse of untrusted NL, save gated on validate_odrl)"
+        )
+    elif scenario_id == "odrl_convert_concurrent":
+        print("diagnosis: blind save with a stale version overwrote the rival update")
+        print(
+            f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
+            "(re-read save_odrl by version before mutating saves)"
         )
     else:
         print(
