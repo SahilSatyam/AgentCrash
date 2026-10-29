@@ -23,9 +23,9 @@ survive surprises. No day-wise timeline; readiness is gated by rehearsal count.
 # 1. Enter WSL and the repo
 wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/sahil/AgentCrash && pwd'
 
-# 2. Environment (inside WSL)
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+# 2. Environment (inside WSL; uv-managed venv)
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
 
 # 3. Model credentials (live demo only; fakes need nothing)
 export LLAMA_API_KEY="..." LLAMA_BASE_URL="https://api.llama.example/v1"

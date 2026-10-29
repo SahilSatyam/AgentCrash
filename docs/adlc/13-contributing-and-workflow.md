@@ -152,8 +152,8 @@ A task is done only when all of these hold:
 
 ```bash
 # inside WSL, repo root /home/sahil/AgentCrash
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
 ruff check . && black --check . && pytest -q
 python -m agentcrash run --scenario timeout_retry --model fake
 python -m agentcrash check --trace traces/latest.jsonl

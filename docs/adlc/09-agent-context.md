@@ -67,11 +67,11 @@ Planned CLI module layout (do not invent alternate entry points):
 - Model access: Meta Llama via the standard API adapter. The key is provided
   through the environment, never committed (see doc 11 on security).
 
-Run these setup steps inside WSL:
+Run these setup steps inside WSL (uv-managed venv; no `pip` binary needed):
 
-    python3 -m venv .venv
+    uv venv
     source .venv/bin/activate
-    pip install -e .[dev]
+    uv pip install -e ".[dev]"
     export LLAMA_API_KEY=paste-key-here
 
 Expected layout values used across examples in this doc set:

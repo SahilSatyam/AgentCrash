@@ -91,7 +91,7 @@ Tasks:
 - [x] Record ADR-006: M0–M3 scheme repo-wide; frozen anchor table (threshold 1500ms, fault latency 2000ms, seed 42, tick 50ms); 06 §5 canonical schema; run_id normalization rule for golden diffs — done (plus ADR-007)
 - [x] Fix README + 10-A anchors to ADR-006 values; assign all TBD OQ owners (founder = scope, tech lead = technical) — done (adlc README, docs 03/04/09/10/11/12/13/14)
 - [x] Scaffold `pyproject.toml` (`agentcrash` console script, `[dev]` extras), lockfile, pytest/ruff/black config, `.gitignore` (`traces/*` except goldens, `.venv/`), empty package skeleton — done
-- [ ] Verify `github.com/SahilSatyam/AgentCrash.git` is public and README quickstart works; back up `_staging_adlc` until ported — public verified; backup n/a (staging absent); fresh-machine quickstart check still open (→ M0)
+- [x] Verify `github.com/SahilSatyam/AgentCrash.git` is public and README quickstart works; back up `_staging_adlc` until ported — public verified; backup n/a (staging absent); quickstart verified via pristine-tree clean room on the same machine (`uv venv`, `uv pip install -e ".[dev]"`, ruff/black/pytest all green); a different-machine check remains a nice-to-have
 
 Dependencies: this plan's approval. Nothing else.
 
@@ -332,7 +332,7 @@ Exit criteria:
 - [x] F.5 Llama endpoint assumed, not specified (`llama-3.3-70b` placeholder, OQ-02 open; no canonical endpoint found). Decision (Phase 4): adapter reads `LLAMA_BASE_URL` + model id over an OpenAI-compatible `POST {base}/chat/completions` (stdlib `urllib`, JSON-only response), default model string stays `llama-3.3-70b` as a placeholder; live calls are opt-in and slow — transport failures fall back to the fixture-backed reference patch, schema-invalid model output is rejected (`E_POLICY_REJECTED`, exit 4). No live key exists; everything verified via stub/fake.
 - [x] F.6 S4 lives outside git (`_staging_adlc`). Recommendation: port in Phase 0; S4 specs to 03/06/07/10 or ADR-007. — corrected: staging tree is absent (not outside git); resolved via ADR-007 deferral, no specs invented.
 - [x] F.7 Unowned OQs in 09/10/11 (TBD owners). Recommendation: founder = scope, tech lead = technical (Phase 0). — done (also 03 OQs + 04/12 gates).
-- [ ] F.8 `pip install agentcrash` (15 M3) vs `pip install -e .[dev]` + `python -m` (09/13); no `pip` binary in WSL (only `uv`). Recommendation: console-script canonical at Phase 7 with `python -m` shim; quickstart uses `uv venv` + `uv pip`. — preempted in part: console script + `python -m` shim + uv workflow landed in the Phase 0 scaffold; final call stays Phase 7.
+- [x] F.8 `pip install agentcrash` (15 M3) vs `pip install -e .[dev]` + `python -m` (09/13); no `pip` binary in WSL (only `uv`). Recommendation: console-script canonical at Phase 7 with `python -m` shim; quickstart uses `uv venv` + `uv pip`. — closed: console script + `python -m` shim + uv workflow in scaffold; 09 §3 / 13 §9 / 14 §2 quickstarts converted to `uv venv` + `uv pip install -e ".[dev]"`; clean-room install + gates verified green 2026-10-29.
 
 ## G. Risks and Mitigation Plan
 
