@@ -207,28 +207,28 @@ Scope: policy/v1 load/validate/merge-patch application, `diagnose` (fixture-back
 
 Tasks:
 
-- [ ] Implement policy engine: load/validate `policy/v1`, apply `policy_patch/v1` merge-patch, `diff_policies` review rendering
-- [ ] Implement fixture-backed `diagnose` (reference patch for the double-charge trace; refuses passing traces with `No invariant violations to diagnose`)
-- [ ] Implement live-LLM `diagnose` path behind `--model` flag (OpenAI-compatible `chat.completions` vs `LLAMA_BASE_URL`); output strictly schema-validated, `E_POLICY_REJECTED` otherwise
-- [ ] Implement `replay` (same scenario + seed from source trace) + `--regression` over `traces/golden/`; invalid patch fails closed pre-run (exit 4, no trace)
-- [ ] Author `policies/fixed-timeout.yaml` (status-read-then-same-key-retry) and check in fix-verified golden
+- [x] Implement policy engine: load/validate `policy/v1`, apply `policy_patch/v1` merge-patch, `diff_policies` review rendering — done: `policy.py` + `test_policy.py` green (ADR-004 shorthand normalized, `time_travel` rejected)
+- [x] Implement fixture-backed `diagnose` (reference patch for the double-charge trace; refuses passing traces with `No invariant violations to diagnose`) — done: `cli.py cmd_diagnose`, exit 2 on PASS traces
+- [x] Implement live-LLM `diagnose` path behind `--model` flag (OpenAI-compatible `chat.completions` vs `LLAMA_BASE_URL`); output strictly schema-validated, `E_POLICY_REJECTED` otherwise — done: opt-in live path with fixture fallback, invalid model output exits 4
+- [x] Implement `replay` (same scenario + seed from source trace) + `--regression` over `traces/golden/`; invalid patch fails closed pre-run (exit 4, no trace) — done: `cli.py cmd_replay` + `_regress_golden`
+- [x] Author `policies/fixed-timeout.yaml` (status-read-then-same-key-retry) and check in fix-verified golden — done: fixed policy + `scenarios/timeout_retry_fixed/` variant + `traces/golden/timeout_retry-fixed-seed42.*` (strict-clean); stub implements `check_then_act` reconcile reads
 
 Dependencies: Phase 3 (verdicts); live path additionally needs key/endpoint decision F.5.
 
 Deliverables:
 
-- [ ] `diagnose`, `replay`, fixed policy, fix-verified golden
+- [x] `diagnose`, `replay`, fixed policy, fix-verified golden — all landed and green
 
 Acceptance / testing:
 
-- [ ] FR-17–22 oracles incl. `time_travel` fail-closed and passing-trace refusal; `policy/base.yaml` mtime unchanged by `diagnose`
-- [ ] Replay shows `fix: VERIFIED (exactly_once PASS, task PAID)` + `regression: control PASS`
+- [x] FR-17–22 oracles incl. `time_travel` fail-closed and passing-trace refusal; `policy/base.yaml` mtime unchanged by `diagnose` — done: `test_replay.py` fail-closed (no trace written), `test_diagnose.py` refusal + mtime/checksum proof
+- [x] Replay shows `fix: VERIFIED (exactly_once PASS, task PAID)` + `regression: control PASS` — done: observed `fix: VERIFIED (exactly_once_mutation PASS, task PAID)` + `regression: 4/4 golden traces still PASS`
 
 Risks: diagnoser scope creep — mitigate with `--max-rules 1` default and diff-only enforcement in code.
 
 Exit criteria:
 
-- [ ] Full `run → check → diagnose → replay` green offline; default suite uses fake adapter, live calls opt-in `slow`
+- [x] Full `run → check → diagnose → replay` green offline; default suite uses fake adapter, live calls opt-in `slow` — done: 95 passed, loop observed green with no model key
 
 ### Phase 5 — S2 + S3 + corpus (P1)
 
@@ -323,7 +323,7 @@ Exit criteria:
 - [x] F.2 Anchor numbers conflict — README anchors vs 05 values vs 03 fixture vs 10-A disagree. Recommendation: freeze 05/06 values in ADR-006 (Phase 0). — closed via ADR-006 anchor table + README/10-A conformance.
 - [x] F.3 Trace schema has three dialects (06 envelope vs 09 field names vs 07 sketch). Recommendation: 06 §5 + §8 canonical; fix 09 §5 and 07 §4 (Phase 0/1). — canonical declared in ADR-006; example conformance (14, 09 §5, 03, 04) is M0 follow-up work.
 - [x] F.4 `run_id` content-derived (06) vs golden byte-compare exemptions (03 FR-03) vs byte-identical demand (10 §6). Recommendation: normalize `run_id` + declared `ts_wall` before diff (Phase 0 ADR-006, enforced Phase 2). — rule recorded in ADR-006; enforcement lands with the Phase 2 seed-matrix gate.
-- [ ] F.5 Llama endpoint assumed, not specified (`llama-3.3-70b` placeholder, OQ-02 open; no canonical endpoint found). Recommendation: OpenAI-compatible adapter vs configurable `LLAMA_BASE_URL` + model id; pin default at Phase 4; live calls flagged `slow` with fixture fallback.
+- [x] F.5 Llama endpoint assumed, not specified (`llama-3.3-70b` placeholder, OQ-02 open; no canonical endpoint found). Decision (Phase 4): adapter reads `LLAMA_BASE_URL` + model id over an OpenAI-compatible `POST {base}/chat/completions` (stdlib `urllib`, JSON-only response), default model string stays `llama-3.3-70b` as a placeholder; live calls are opt-in and slow — transport failures fall back to the fixture-backed reference patch, schema-invalid model output is rejected (`E_POLICY_REJECTED`, exit 4). No live key exists; everything verified via stub/fake.
 - [x] F.6 S4 lives outside git (`_staging_adlc`). Recommendation: port in Phase 0; S4 specs to 03/06/07/10 or ADR-007. — corrected: staging tree is absent (not outside git); resolved via ADR-007 deferral, no specs invented.
 - [x] F.7 Unowned OQs in 09/10/11 (TBD owners). Recommendation: founder = scope, tech lead = technical (Phase 0). — done (also 03 OQs + 04/12 gates).
 - [ ] F.8 `pip install agentcrash` (15 M3) vs `pip install -e .[dev]` + `python -m` (09/13); no `pip` binary in WSL (only `uv`). Recommendation: console-script canonical at Phase 7 with `python -m` shim; quickstart uses `uv venv` + `uv pip`. — preempted in part: console script + `python -m` shim + uv workflow landed in the Phase 0 scaffold; final call stays Phase 7.
@@ -344,7 +344,7 @@ Exit criteria:
 - [x] Phase 1: clock + tracer + schemas + ledger + redaction tests green; 09 §5 fixed to 06
 - [x] Phase 2: tools + injector + stub/fake + `run` offline; golden failing trace in; seed-matrix diff green; README/10-A anchors fixed (anchors already conformant — no edits needed)
 - [x] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated — evidence: 67 passed, `check` seed42 golden exits 1 with steps [3, 4]
-- [ ] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken
+- [x] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken — evidence: 95 passed, `fix: VERIFIED (exactly_once_mutation PASS, task PAID)` + `regression: 4/4 PASS`
 - [ ] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green
 - [ ] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided
 - [ ] Phase 7: packaging clean-install log; full CI matrix; cost sheet; runbook ×2 rehearsals; release tag + changelog; demo recorded; submitted

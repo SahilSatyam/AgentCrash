@@ -1,0 +1,23 @@
+{
+  "api_version": "v1",
+  "ledger_hash": "sha256:8c612d886520a20a2008b462d0bfa76a0cd351c88fda97963cebe4881057c58e",
+  "policy_hash": "sha256:03f2a8332f6e2dd4e00d5124eaec4808b989953a6bda5b320360802ce8fa02dd",
+  "results": [
+    {
+      "evidence": "exactly 1 committed charge_card effect for invoice #9821 (ch_001); charge steps [3]",
+      "id": "exactly_once_mutation",
+      "passed": true
+    },
+    {
+      "evidence": "invoice #9821 status=PAID",
+      "id": "task_completion",
+      "passed": true
+    }
+  ],
+  "run_id": "3432a75adfa9f682",
+  "scenario": "payment_gateway_timeout",
+  "seed": 42,
+  "side_effect_count": 1,
+  "task_completion": true,
+  "verdict": "PASS"
+}

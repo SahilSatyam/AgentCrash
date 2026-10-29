@@ -3,7 +3,9 @@
 The v0 agent runs ``stub-plan:retry_immediately``: check status, charge
 once, and on an ambiguous TIMEOUT retry immediately — blindly issuing a
 fresh idempotency key under the naive policy (the double-charge bug that
-Phase 3 verifiers catch). Both the stub and the fake model adapter sit
+Phase 3 verifiers catch). Under a ``check_then_act`` rule the stub first
+reconciles via ``get_transaction_status`` and retries with the same key
+only while the invoice is still UNPAID. Both the stub and the fake model adapter sit
 behind ``complete(messages, tools, timeout_s)``; the live Llama transport
 is stubbed to refuse without a key and never touches the network, so every
 run is fixture-backed and deterministic. No wall-clock calls anywhere.
@@ -53,11 +55,13 @@ class StubAgent:
         amount: float,
         max_attempts: int = 1,
         require_idempotency_key: bool = False,
+        reconcile_first: bool = False,
     ) -> None:
         self._invoice_id = invoice_id
         self._amount = amount
         self._max_attempts = max_attempts
         self._require_key = require_idempotency_key
+        self._reconcile_first = reconcile_first
 
     def retries_allowed(self, attempts_made: int) -> bool:
         """True while another mutating attempt fits in max_attempts."""
@@ -67,6 +71,15 @@ class StubAgent:
         if self._require_key:
             return FIRST_IDEMPOTENCY_KEY
         return f"{FIRST_IDEMPOTENCY_KEY}-r{attempts_made}"
+
+    def _needs_reconcile(self, history: list[dict[str, Any]]) -> bool:
+        """True when no status read followed the latest charge attempt."""
+        for entry in reversed(history):
+            if entry.get("tool") == GET_TRANSACTION_STATUS:
+                return False
+            if entry.get("tool") == CHARGE_CARD and entry.get("outcome") != "error":
+                return True
+        return False
 
     def next_action(self, history: list[dict[str, Any]]) -> dict[str, Any]:
         """Pick the next action from past tool results (pure function)."""
@@ -108,6 +121,12 @@ class StubAgent:
             if last.get("outcome") == "error":
                 return {"type": "done", "reason": "tool args rejected"}
             if last.get("outcome") == "timeout":
+                if self._reconcile_first and self._needs_reconcile(history):
+                    return {
+                        "type": "call",
+                        "tool": GET_TRANSACTION_STATUS,
+                        "args": {"invoice_id": self._invoice_id},
+                    }
                 if self.retries_allowed(len(charges)):
                     return {
                         "type": "call",
@@ -238,9 +257,10 @@ def run_react_loop(
         retry = rule.get("retry", {}) or {}
         max_attempts = int(retry.get("max_attempts", 1))
         require_key = bool(retry.get("require_idempotency_key", False))
+        reconcile_first = str(rule.get("action", "retry_same")) == "check_then_act"
     else:
-        max_attempts, require_key = 0, False
-    agent = StubAgent(invoice_id, amount, max_attempts, require_key)
+        max_attempts, require_key, reconcile_first = 0, False, False
+    agent = StubAgent(invoice_id, amount, max_attempts, require_key, reconcile_first)
     adapter = FakeAdapter(agent, registry.tool_names)
 
     writer = TraceWriter(run_id, scenario_id, trace_path)
