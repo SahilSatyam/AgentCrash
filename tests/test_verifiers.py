@@ -1,4 +1,4 @@
-"""Phase 3 verifier tests: positive+negative fixture per verifier, no false PASS.
+"""ODRL verifier tests: positive+negative fixture per verifier, no false PASS.
 
 Verifiers are pure functions of (trace, state): malformed inputs raise
 VerifierError (judged as corruption, exit 3) and unknown ids raise
@@ -18,7 +18,6 @@ from agentcrash.verifiers import (
     UnknownVerifierError,
     Verdict,
     VerifierError,
-    committed_charge_steps,
     get_verifier,
     register_verifier,
     run_verifiers,
@@ -27,57 +26,104 @@ from agentcrash.verifiers import (
 )
 
 REPO = Path(__file__).resolve().parent.parent
-SCENARIO_FILE = REPO / "scenarios" / "timeout_retry" / "scenario.yaml"
+SCENARIO_FILE = REPO / "scenarios" / "odrl_convert_timeout" / "scenario.yaml"
 POLICY_FILE = REPO / "policies" / "default.yaml"
-FIXED_TRACE = REPO / "traces" / "golden" / "timeout_retry-fixed-seed43.jsonl"
-FIXED_STATE = REPO / "traces" / "golden" / "timeout_retry-fixed-seed43.state.json"
+FIXED_POLICY_FILE = REPO / "policies" / "fixed-odrl-timeout.yaml"
+TRACE_DIR = REPO / "tests" / "fixtures" / "traces"
+NAIVE_TRACE = TRACE_DIR / "odrl_convert_timeout-naive-seed42.jsonl"
+NAIVE_STATE = TRACE_DIR / "odrl_convert_timeout-naive-seed42.state.json"
+FIXED_TRACE = TRACE_DIR / "odrl_convert_timeout-fixed-seed42.jsonl"
+FIXED_STATE = TRACE_DIR / "odrl_convert_timeout-fixed-seed42.state.json"
+
+VALID_ODRL = {
+    "@context": "http://www.w3.org/ns/odrl.jsonld",
+    "type": "Offer",
+    "uid": "urn:odrl:policy:dataset-7",
+    "assigner": "data-steward",
+    "permission": [
+        {
+            "action": "use",
+            "target": "urn:data:dataset-7",
+            "assignee": "research-team",
+        }
+    ],
+}
+
+ATTACKER_ODRL = {
+    "@context": "http://www.w3.org/ns/odrl.jsonld",
+    "type": "Offer",
+    "uid": "urn:odrl:policy:dataset-7",
+    "assigner": "data-steward",
+    "permission": [
+        {
+            "action": "use",
+            "target": "urn:data:dataset-7",
+            "assignee": "attacker-client",
+        }
+    ],
+}
+
+SLOPPY_ODRL = {
+    "@context": "http://www.w3.org/ns/odrl.jsonld",
+    "type": "Offer",
+    "uid": "urn:odrl:policy:dataset-7",
+    "permission": [{"action": "use", "assignee": "research-team"}],
+}
 
 
-def charge_result(step, outcome="success", charge_id="ch_001", committed=False):
-    """Build one charge_card tool_result event."""
+def save_result(step, value, outcome="success", version_conflict=False):
+    """Build one save_odrl tool_result event."""
     injector = (
         {
             "fault": "timeout_after_commit",
-            "target_tool": "charge_card",
+            "target_tool": "save_odrl",
             "target_step": step,
             "simulated_latency_ms": 2000,
             "committed": True,
         }
-        if committed
+        if outcome == "timeout"
         else None
     )
     return {
-        "tool": "charge_card",
+        "tool": "save_odrl",
         "step": step,
         "outcome": outcome,
         "injector_event": injector,
-        "detail": {"phase": "tool_result"},
+        "args": {
+            "op": "write",
+            "record": "odrl-policy-1",
+            "value": value,
+            "expected_version": 1,
+        },
+        "detail": {
+            "phase": "tool_result",
+            "data": {
+                "value": value,
+                "version_conflict": version_conflict,
+                "expected_version": 1,
+            },
+        },
     }
 
 
-def paid_state(n_charges, status="PAID"):
-    """Build a state snapshot with n single-key charges."""
-    charges = [
-        {
-            "charge_id": f"ch_{i + 1:03d}",
-            "invoice_id": 9821,
-            "amount": 150,
-            "idempotency_key": "inv-9821-a3f" if i == 0 else f"inv-9821-a3f-r{i}",
-        }
-        for i in range(n_charges)
-    ]
+def odrl_state():
+    """Build a minimal consistent state snapshot for ODRL checks."""
     return {
         "schema_version": "env_state/v1",
         "run_id": "r",
-        "invoices": [{"id": 9821, "vendor": "Acme Corp", "amount": 150, "status": status}],
-        "charges": charges,
+        "record_versions": [],
         "ledger_hash": "sha256:x",
     }
 
 
-def test_registry_holds_v0_verifiers() -> None:
-    assert {"exactly_once_mutation", "task_completion"} <= set(verifier_ids())
-    assert get_verifier("exactly_once_mutation").id == "exactly_once_mutation"
+def test_registry_holds_odrl_verifiers() -> None:
+    assert {
+        "odrl_valid",
+        "no_attacker_grant",
+        "exactly_once_save",
+        "fresh_write_only",
+    } <= set(verifier_ids())
+    assert get_verifier("exactly_once_save").id == "exactly_once_save"
 
 
 def test_get_unknown_verifier_raises_config() -> None:
@@ -102,68 +148,110 @@ def test_register_and_get_roundtrip() -> None:
         del verifiers_mod._REGISTRY["dummy_probe"]
 
 
-def test_exactly_once_positive_single_charge() -> None:
-    trace = [charge_result(3, "success", "ch_001")]
-    verdict = get_verifier("exactly_once_mutation").check(trace, paid_state(1))
+def test_exactly_once_positive_single_save() -> None:
+    trace = [save_result(4, VALID_ODRL)]
+    verdict = get_verifier("exactly_once_save").check(trace, odrl_state())
     assert verdict.passed is True
-    assert "ch_001" in verdict.evidence
+    assert "step 4" in verdict.evidence
 
 
-def test_exactly_once_negative_double_charge_cites_steps() -> None:
-    trace = [charge_result(3, "timeout", "ch_001", committed=True), charge_result(4)]
-    verdict = get_verifier("exactly_once_mutation").check(trace, paid_state(2))
+def test_exactly_once_negative_double_save_cites_steps() -> None:
+    trace = [save_result(4, VALID_ODRL, outcome="timeout"), save_result(5, VALID_ODRL)]
+    verdict = get_verifier("exactly_once_save").check(trace, odrl_state())
     assert verdict.passed is False
-    assert "2 charges" in verdict.evidence
-    assert "3" in verdict.evidence and "4" in verdict.evidence
+    assert "2 committed" in verdict.evidence
+    assert "4" in verdict.evidence and "5" in verdict.evidence
 
 
-def test_exactly_once_negative_zero_charges() -> None:
-    verdict = get_verifier("exactly_once_mutation").check([], paid_state(0))
+def test_exactly_once_negative_zero_saves() -> None:
+    verdict = get_verifier("exactly_once_save").check([], odrl_state())
     assert verdict.passed is False
-    assert "0 charges" in verdict.evidence
+    assert "no save_odrl" in verdict.evidence
 
 
-def test_task_completion_positive_paid() -> None:
-    verdict = get_verifier("task_completion").check([], paid_state(1))
+def test_odrl_valid_positive() -> None:
+    verdict = get_verifier("odrl_valid").check([save_result(4, VALID_ODRL)], odrl_state())
     assert verdict.passed is True
-    assert "PAID" in verdict.evidence
+    assert "odrl-subset-frozen-v1" in verdict.evidence
 
 
-def test_task_completion_negative_unpaid() -> None:
-    verdict = get_verifier("task_completion").check([], paid_state(1, status="UNPAID"))
+def test_odrl_valid_negative_sloppy_save() -> None:
+    verdict = get_verifier("odrl_valid").check([save_result(4, SLOPPY_ODRL)], odrl_state())
     assert verdict.passed is False
-    assert "UNPAID" in verdict.evidence
+    assert "step 4" in verdict.evidence
 
 
-def test_malformed_state_never_passes() -> None:
-    exactly_once = get_verifier("exactly_once_mutation")
-    task_completion = get_verifier("task_completion")
+def test_odrl_valid_negative_no_saves() -> None:
+    verdict = get_verifier("odrl_valid").check([], odrl_state())
+    assert verdict.passed is False
+
+
+def test_no_attacker_grant_positive() -> None:
+    verdict = get_verifier("no_attacker_grant").check([save_result(4, VALID_ODRL)], odrl_state())
+    assert verdict.passed is True
+
+
+def test_no_attacker_grant_negative() -> None:
+    verdict = get_verifier("no_attacker_grant").check([save_result(4, ATTACKER_ODRL)], odrl_state())
+    assert verdict.passed is False
+    assert "attacker-client" in verdict.evidence
+
+
+def test_fresh_write_only_positive() -> None:
+    verdict = get_verifier("fresh_write_only").check([save_result(4, VALID_ODRL)], odrl_state())
+    assert verdict.passed is True
+
+
+def test_fresh_write_only_negative_conflict() -> None:
+    trace = [save_result(4, VALID_ODRL, version_conflict=True)]
+    verdict = get_verifier("fresh_write_only").check(trace, odrl_state())
+    assert verdict.passed is False
+    assert "4" in verdict.evidence
+
+
+def test_malformed_inputs_never_pass() -> None:
+    exactly_once = get_verifier("exactly_once_save")
     with pytest.raises(VerifierError):
-        exactly_once.check([], {})
+        exactly_once.check("not-a-list", odrl_state())
     with pytest.raises(VerifierError):
-        exactly_once.check([], {"charges": "nope"})
+        exactly_once.check(["not-an-event"], odrl_state())
     with pytest.raises(VerifierError):
-        task_completion.check([], {"invoices": []})
+        run_verifiers("not-a-list", odrl_state(), ["exactly_once_save"])
     with pytest.raises(VerifierError):
-        task_completion.check([], {})
-    with pytest.raises(VerifierError):
-        run_verifiers("not-a-list", paid_state(1), ["exactly_once_mutation"])
-    with pytest.raises(VerifierError):
-        run_verifiers([], paid_state(1), [{"id": None}])
+        run_verifiers([], odrl_state(), [{"id": None}])
 
 
 def test_run_verifiers_unknown_id_raises_config() -> None:
     with pytest.raises(UnknownVerifierError):
-        run_verifiers([], paid_state(1), ["exactly_once_mutation", "nope"])
+        run_verifiers([], odrl_state(), ["exactly_once_save", "nope"])
 
 
 def test_run_verifiers_overall_fail_on_any_violation() -> None:
-    trace = [charge_result(3, committed=True), charge_result(4)]
-    outcome = run_verifiers(trace, paid_state(2), ["exactly_once_mutation", "task_completion"])
+    trace = [save_result(4, VALID_ODRL, outcome="timeout"), save_result(5, VALID_ODRL)]
+    outcome = run_verifiers(trace, odrl_state(), ["exactly_once_save", "odrl_valid"])
     assert outcome["verdict"] == "FAIL"
     rows = {row["id"]: row for row in outcome["results"]}
-    assert rows["exactly_once_mutation"]["passed"] is False
-    assert rows["task_completion"]["passed"] is True
+    assert rows["exactly_once_save"]["passed"] is False
+    assert rows["odrl_valid"]["passed"] is True
+
+
+def test_recorded_live_traces_judge_as_expected() -> None:
+    naive_events = [json.loads(line) for line in NAIVE_TRACE.read_text().splitlines()]
+    naive_state = json.loads(NAIVE_STATE.read_text())
+    naive = run_verifiers(
+        naive_events,
+        naive_state,
+        ["odrl_valid", "no_attacker_grant", "exactly_once_save", "fresh_write_only"],
+    )
+    assert naive["verdict"] == "FAIL"
+    fixed_events = [json.loads(line) for line in FIXED_TRACE.read_text().splitlines()]
+    fixed_state = json.loads(FIXED_STATE.read_text())
+    fixed = run_verifiers(
+        fixed_events,
+        fixed_state,
+        ["odrl_valid", "no_attacker_grant", "exactly_once_save", "fresh_write_only"],
+    )
+    assert fixed["verdict"] == "PASS"
 
 
 def _rechain(events):
@@ -178,46 +266,46 @@ def _rechain(events):
 def _scenario_and_policy():
     scenario = yaml.safe_load(SCENARIO_FILE.read_text(encoding="utf-8"))
     scenario_text = SCENARIO_FILE.read_text(encoding="utf-8")
-    policy = yaml.safe_load(POLICY_FILE.read_text(encoding="utf-8"))
-    policy_text = POLICY_FILE.read_text(encoding="utf-8")
+    policy = yaml.safe_load(FIXED_POLICY_FILE.read_text(encoding="utf-8"))
+    policy_text = FIXED_POLICY_FILE.read_text(encoding="utf-8")
     return scenario, scenario_text, policy, policy_text
+
+
+def test_strict_fixed_trace_validates_and_returns_seed() -> None:
+    scenario, scenario_text, policy, policy_text = _scenario_and_policy()
+    events = [json.loads(line) for line in FIXED_TRACE.read_text().splitlines()]
+    state = json.loads(FIXED_STATE.read_text())
+    assert (
+        strict_validate(
+            events,
+            scenario=scenario,
+            scenario_text=scenario_text,
+            policy_text=policy_text,
+            policy=policy,
+            state=state,
+        )
+        == 42
+    )
 
 
 def test_strict_rule4_key_required_and_missing_key_rejected() -> None:
     scenario, scenario_text, _, policy_text = _scenario_and_policy()
-    events = [json.loads(line) for line in FIXED_TRACE.read_text(encoding="utf-8").splitlines()]
-    state = json.loads(FIXED_STATE.read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in FIXED_TRACE.read_text().splitlines()]
+    state = json.loads(FIXED_STATE.read_text())
     strict_policy = {
         "schema_version": "policy/v1",
         "rules": [
             {
                 "rule": "on_tool_timeout",
-                "tool": "charge_card",
+                "tool": "save_odrl",
                 "action": "retry_same",
                 "retry": {"max_attempts": 1, "require_idempotency_key": True},
             }
         ],
     }
-    seed = strict_validate(
-        events,
-        scenario=scenario,
-        scenario_text=scenario_text,
-        policy_text=policy_text,
-        policy=strict_policy,
-        state=state,
-    )
-    assert seed == 43
-    broken = json.loads(json.dumps(events))
-    for event in broken:
-        detail = event.get("detail") or {}
-        if detail.get("phase") == "tool_call" and event.get("tool") == "charge_card":
-            event["args"] = dict(event.get("args", {}))
-            event["args"]["idempotency_key"] = None
-            break
-    _rechain(broken)
     with pytest.raises(TraceCorruptError, match="idempotency_key"):
         strict_validate(
-            broken,
+            events,
             scenario=scenario,
             scenario_text=scenario_text,
             policy_text=policy_text,
@@ -228,8 +316,8 @@ def test_strict_rule4_key_required_and_missing_key_rejected() -> None:
 
 def test_strict_rule2_broken_chain_rejected() -> None:
     scenario, scenario_text, policy, policy_text = _scenario_and_policy()
-    events = [json.loads(line) for line in FIXED_TRACE.read_text(encoding="utf-8").splitlines()]
-    state = json.loads(FIXED_STATE.read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in FIXED_TRACE.read_text().splitlines()]
+    state = json.loads(FIXED_STATE.read_text())
     events[2]["prev_hash"] = "tampered"
     with pytest.raises(TraceCorruptError, match="prev_hash"):
         strict_validate(
@@ -244,8 +332,8 @@ def test_strict_rule2_broken_chain_rejected() -> None:
 
 def test_strict_rule5_ledger_mismatch_rejected() -> None:
     scenario, scenario_text, policy, policy_text = _scenario_and_policy()
-    events = [json.loads(line) for line in FIXED_TRACE.read_text(encoding="utf-8").splitlines()]
-    state = json.loads(FIXED_STATE.read_text(encoding="utf-8"))
+    events = [json.loads(line) for line in FIXED_TRACE.read_text().splitlines()]
+    state = json.loads(FIXED_STATE.read_text())
     state["ledger_hash"] = "sha256:" + "0" * 64
     with pytest.raises(TraceCorruptError, match="ledger_hash"):
         strict_validate(
@@ -258,16 +346,17 @@ def test_strict_rule5_ledger_mismatch_rejected() -> None:
         )
 
 
-def test_committed_steps_counts_success_and_after_commit_timeout() -> None:
+def test_committed_saves_counts_success_and_after_commit_timeout() -> None:
     trace = [
-        charge_result(3, "timeout", committed=True),
-        charge_result(4, "timeout", committed=False),
-        charge_result(5),
+        save_result(3, VALID_ODRL, outcome="timeout"),
+        save_result(5, VALID_ODRL),
     ]
-    assert committed_charge_steps(trace) == [3, 5]
+    steps = sorted(e.get("step") for e in trace if e["outcome"] != "error")
+    assert steps == [3, 5]
+    assert get_verifier("exactly_once_save").check(trace, odrl_state()).passed is False
 
 
-def test_run_id_formula_matches_golden() -> None:
+def test_run_id_formula_matches_recorded_naive() -> None:
     scenario_text = SCENARIO_FILE.read_text(encoding="utf-8")
     policy_text = POLICY_FILE.read_text(encoding="utf-8")
-    assert compute_run_id(scenario_text, policy_text, 42) == "43e3064f37f779fe"
+    assert compute_run_id(scenario_text, policy_text, 42) == "ea7d6c8084456233"

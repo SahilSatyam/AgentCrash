@@ -1,0 +1,30 @@
+# Fixed ODRL timeout policy: reconcile-first on ambiguous save timeouts.
+# After a save_odrl TIMEOUT, re-read the record version; only rewrite when
+# the save is actually missing, keeping saves exactly-once. Carries the
+# strict validation gate and freshness proof from fixed-odrl-convert.
+schema_version: policy/v1
+rules:
+  - rule: on_untrusted_content
+    tool: parse_policy
+    action: require_confirmation
+    confirmation:
+      above_amount_cents: 10000
+      mutating_from_doc: deny_without_approval
+  - rule: on_stale_read
+    tool: save_odrl
+    action: check_then_act
+    check:
+      tool: save_odrl
+      by: version
+    retry:
+      max_attempts: 1
+      require_idempotency_key: false
+  - rule: on_tool_timeout
+    tool: save_odrl
+    action: check_then_act
+    check:
+      tool: save_odrl
+      by: version
+    retry:
+      max_attempts: 1
+      require_idempotency_key: false

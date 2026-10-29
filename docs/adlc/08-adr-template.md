@@ -365,6 +365,60 @@ Port nothing. S4 spec stubs (03/06/07/10 or a dedicated ADR) land only after the
 
 ---
 
+## ADR-008: Live-model NL→ODRL agent; payment surface removed
+
+- **Status:** Accepted
+- **Milestone:** M1 (live-agent pivot, founder-directed)
+- **Decision owner:** Founder (scope: ODRL-only demo; no real transfers)
+- **Related requirements:** plan §F (live pivot); doc 15 changelog (v0.3.0 entry)
+- **Related ADRs:** ADR-006 (frozen anchors unchanged); ADR-007 (S4 gap closed by founder direction, not staging source)
+
+### Context
+
+The founder supplied a Meta model key and directed that all agentic
+workflows be real end-to-end model calls (no mocks, no fakes), that the
+payment scenario be removed (real transfers infeasible), and that the
+demo be a state-of-the-art NL→ODRL conversion workflow. Endpoint and
+auth were grounded in the official Meta docs: `https://api.meta.ai/v1`,
+`POST /v1/chat/completions`, Bearer `LLAMA_API_KEY`, model
+`muse-spark-1.3`.
+
+### Options considered
+
+| Option | Fate | Reason |
+|---|---|---|
+| Keep payment scenarios with a stub/fake agent | Rejected | Founder veto; fakes contradict the live end-to-end requirement |
+| Live agent + payment scenarios against real rails | Rejected | Real transfers infeasible in a crash-injection demo |
+| Live agent, ODRL-only, synthetic tools (chosen) | Chosen | Only the agent brain is live; the versioned ODRL store stays synthetic as the safety boundary |
+
+### Decision
+
+`LlamaAdapter` is the only agent transport (OpenAI-compatible chat
+completions; fail-closed `E_MODEL_API`/exit 5, key from env only, never
+logged). The brief is policy-driven and carries a tool-argument
+reference (valid NL doc ids, record keys). Faults fire on call counts
+(`tool`/`op`/`occurrence`), never step indexes, so they hold for
+nondeterministic live agents. The double-charge lesson is reborn as the
+ambiguous `save_odrl` timeout (`odrl_convert_timeout`): naive blind
+retry double-saves, reconcile-first keeps exactly one. Meta protocol
+findings: no `response_format` (HTTP 400), no `tool`-role messages,
+prose-tolerant JSON extraction. Verdict-pinned oracles replace byte
+goldens for live traces; two recorded live fixtures
+(`tests/fixtures/traces/`) pin naive-FAIL / fixed-PASS. Call budget is
+`max_steps` (12) per run. `test_s4.py` (scripted-converter era)
+deleted, superseded by `test_scenarios_odrl.py`.
+
+### Consequences
+
+- Benefits: demo runs against the real model; every claim re-provable live.
+- Tradeoffs and risks: live runs cost model calls and can wander (recorded
+  fixtures mitigate); key rotation advised (a key appeared in chat history).
+- Follow-up work: CI `LLAMA_API_KEY` secret for the key-gated live test;
+  corpus rebuild (`scripts/metrics.py --build`) with the key present.
+- Revisit when: a second model vendor is added (new ADR then).
+
+---
+
 ## ADR index
 
 | ADR | Title | Status | Milestone |
@@ -376,6 +430,7 @@ Port nothing. S4 spec stubs (03/06/07/10 or a dedicated ADR) land only after the
 | ADR-005 | Scenario-first prototype slice | Accepted | M2 (old scheme; = M0 exit per ADR-006) |
 | ADR-006 | Repo-wide scheme (M0–M3) + frozen anchors + canonical schema | Accepted | M0 |
 | ADR-007 | S4/ODRL source absent — no invented specs | Accepted | M0 |
+| ADR-008 | Live-model NL→ODRL agent; payment surface removed | Accepted | M1 |
 
 ## Open Questions (genuinely undecided, with owners)
 

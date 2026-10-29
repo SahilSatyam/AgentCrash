@@ -323,6 +323,50 @@ Exit criteria:
 
 - [x] Public repo + instructions + demo evidence complete; submission filed — evidence: child-side demo evidence complete (`docs/phase7-evidence/`); submit step is owner-side
 
+### Phase 8 — Live-model NL→ODRL pivot (founder-directed)
+
+Objective: all agentic workflows are real end-to-end Meta-model calls
+(no mocks, no fakes); payment surface removed; NL→ODRL-only demo.
+
+Scope: `LlamaAdapter` over `POST {LLAMA_BASE_URL}/chat/completions`
+(model `muse-spark-1.3`, Bearer `LLAMA_API_KEY`, env-only);
+policy-driven brief + tool-argument reference; occurrence-based faults
+(`tool`/`op`/`occurrence`); 4 ODRL scenarios; verdict-pinned oracles +
+2 recorded live fixtures; `check --policy` override; payment scenarios,
+tools, verifiers, goldens, and `test_s4.py` removed.
+
+Tasks:
+
+- [x] Ground endpoint/auth/model from Meta docs; live smoke via diagnose — evidence: `adapter.py`/`policy.py` transport, `muse-spark-1.3` default
+- [x] Remove payment surface (scenarios, tools, verifiers, ledger/charges, goldens, tests) — evidence: `grep charge_card` clean in `src/` (bench wording excepted), `scenarios/` ODRL-only
+- [x] Occurrence-based faults + `odrl_convert_timeout` (timeout_after_commit on first `save_odrl` write) — evidence: `injector.py` `fault_for_call`/`concurrent_for_call`, scenario `params.tool/op/occurrence`
+- [x] Live loop proven: naive double-save FAIL → fixed single-save PASS → live diagnose patch → replay — evidence: fixtures `tests/fixtures/traces/odrl_convert_timeout-{naive,fixed}-seed42.*`, `check` FAIL/PASS observed
+- [x] Suite reworked (scripted transport replays recorded behaviors; 1 key-gated live test skips in CI) — evidence: `ruff` + `black` clean, `pytest` 136 passed, 1 skipped
+- [x] Docs: ADR-008, README + `docs/setup.md` live flow, this phase record — evidence: this section
+
+Deviations from the plan as written (accepted, founder-directed):
+
+- Byte goldens replaced by verdict-pinned oracles for live traces (model output is nondeterministic); scripted-transport tests replay recorded action sequences for determinism.
+- Concurrent fault fires on first *read* (not write): a rival landing atomically before the first write is unobservable and unwinnable; landing before the first read lets reconcile-first merge and win.
+- `env-state.json` schema drops `invoices`/`charges` (payment removal); `no_lost_update` added to `odrl_convert_concurrent` invariants (was unjudged).
+- Meta protocol: no `response_format`, no `tool`-role messages, prose-tolerant JSON extraction (all proven by live 400s).
+
+Dependencies: Phases 0–7 (harness, loop, verdicts); live key for runs.
+
+Deliverables:
+
+- [x] Live ODRL demo + fixtures + suite + docs, committed on `feat/live-llama-run` (merge pending owner review)
+
+Acceptance / testing:
+
+- [x] Gates green without a key; live loop re-provable with a key — evidence: 136 passed / 1 skipped; recorded naive FAIL + fixed PASS
+
+Risks: model protocol drift (adapter fails closed, ADR-008 records shape); live cost (`max_steps` bounds calls; key-gated test skips in CI); key in chat history (rotation advised).
+
+Exit criteria:
+
+- [x] `feat/live-llama-run` pushed for owner review; no merge by agent — evidence: branch on origin, PR/merge owner-side
+
 ## F. Critical Decisions and Open Questions
 
 - [x] F.1 Milestone scheme conflict — bundle README/13 use M1–M4 + P0–P3 while staging 15 uses M0–M3; same labels, different meanings. Recommendation: adopt M0–M3 everywhere (Phase 0 rewrites README/13/10 labels). — closed via ADR-006 + label edits (05 prose mapping recorded, cleanup deferred to M0).
@@ -354,6 +398,7 @@ Exit criteria:
 - [x] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green — evidence: 105 passed, precision 1.000/recall 1.000, replay-fix 5/5 with 0 new violations
 - [x] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided — evidence: 12 S4 tests green, J5-1..J5-3 dry-runs green, full suite green
 - [x] Phase 7: packaging clean-install log; full CI matrix; cost sheet; runbook ×2 rehearsals; release tag + changelog; demo recorded; submitted — evidence: CI matrix + scan-pii in `ci.yml`, 129 tests green, `docs/phase7-evidence/` (regression report, cost sheet, demo bundle, 2 rehearsals, bench); tag/changelog/submit are owner actions
+- [x] Phase 8: live-model ODRL pivot (founder-directed) — evidence: 136 passed / 1 skipped, recorded naive-FAIL + fixed-PASS fixtures, ADR-008, `feat/live-llama-run` pushed for owner review
 
 ## I. Recommended First Implementation Step
 

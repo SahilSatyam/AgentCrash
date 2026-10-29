@@ -14,7 +14,7 @@ from typing import Any
 import yaml
 
 from agentcrash import __version__
-from agentcrash.adapter import DEFAULT_MODEL, is_odrl_scenario, run_react_loop
+from agentcrash.adapter import DEFAULT_MODEL, ModelNotConfiguredError, run_react_loop
 from agentcrash.injector import FaultSchedule, UnknownFaultError
 from agentcrash.policy import (
     PolicyError,
@@ -27,7 +27,7 @@ from agentcrash.policy import (
     reference_patch_for,
     validate_patch_data,
 )
-from agentcrash.tools import READ_DOC, render_untrusted
+from agentcrash.tools import PARSE_POLICY, SAVE_ODRL, render_untrusted
 from agentcrash.tracer import compute_run_id, verify_chain
 from agentcrash.verifiers import (
     TraceCorruptError,
@@ -151,7 +151,6 @@ def cmd_run(argv: list[str]) -> int:
         return fail("E_CONFIG", str(exc), EXIT_USAGE)
     seed = args.seed if args.seed is not None else file_seed
     max_steps = args.max_steps if args.max_steps is not None else file_steps
-    scripted = is_odrl_scenario(scenario)
     run_id = compute_run_id(scenario_text, policy_text, seed)
     trace_out = args.trace_out or str(Path("traces") / f"{run_id}.jsonl")
     state_out = args.state_out or str(Path("reports") / f"{run_id}.state.json")
@@ -164,7 +163,7 @@ def cmd_run(argv: list[str]) -> int:
             "seed": seed,
             "max_steps": max_steps,
             "model": args.model,
-            "adapter": "fake (offline fixture-backed)",
+            "adapter": "live (LLAMA_BASE_URL)",
             "tools": [t.get("name") for t in scenario.get("tools", [])],
             "faults": scenario.get("faults", []),
             "policy": str(policy_path),
@@ -177,9 +176,7 @@ def cmd_run(argv: list[str]) -> int:
             print(f"task: {plan['task']}")
             print(f"tools: {', '.join(str(t) for t in plan['tools'])}")
             print(f"faults: {plan['faults']}")
-            print(f"policy: {plan['policy']} model: {args.model} (fake offline)")
-            if scripted:
-                print(f"--model {args.model} ignored for odrl_convert (scripted converter)")
+            print(f"policy: {plan['policy']} model: {args.model} (live via LLAMA_BASE_URL)")
             print(f"trace: {trace_out} (dry-run: nothing written)")
         return EXIT_OK
 
@@ -199,6 +196,8 @@ def cmd_run(argv: list[str]) -> int:
         )
     except UnknownFaultError as exc:
         return fail("E_SCHEMA", str(exc), EXIT_USAGE)
+    except ModelNotConfiguredError as exc:
+        return fail("E_MODEL_API", str(exc), EXIT_RUNABORTED)
     except (ValueError, OSError) as exc:
         return fail("E_CONFIG", str(exc), EXIT_USAGE)
 
@@ -222,15 +221,13 @@ def cmd_run(argv: list[str]) -> int:
             f"run_id={summary['run_id']} scenario={summary['scenario']} "
             f"steps={summary['steps']} trace={summary['trace_path']}"
         )
-        if scripted:
-            print(f"--model {args.model} ignored for odrl_convert (scripted converter)")
         print(
             f"status={summary['status']} "
-            f"ledger_hash={summary['ledger_hash']} charges={summary['charges']}"
+            f"ledger_hash={summary['ledger_hash']} saves={summary['saves']}"
         )
         for span in _retrieved_doc_spans(trace_out):
             print(
-                f"doc {span['doc_id']} ({span['bytes']} bytes, "
+                f"nl {span['doc_id']} ({span['bytes']} bytes, "
                 f"untrusted_source=true, {span['source']}):"
             )
             print(render_untrusted(span["text"], span["source"]))
@@ -238,14 +235,14 @@ def cmd_run(argv: list[str]) -> int:
 
 
 def _retrieved_doc_spans(trace_path: str) -> list[dict[str, Any]]:
-    """Collect read_doc result spans for delimiter rendering (doc 11 S3)."""
+    """Collect parsed-NL spans for delimiter rendering (doc 11 S3)."""
     try:
         events = load_trace_events(trace_path)
     except TraceCorruptError:
         return []
     spans: list[dict[str, Any]] = []
     for event in events:
-        if event.get("tool") != READ_DOC:
+        if event.get("tool") != PARSE_POLICY:
             continue
         if event.get("detail", {}).get("phase") != "tool_result":
             continue
@@ -282,6 +279,7 @@ def cmd_check(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="agentcrash check")
     parser.add_argument("--trace", required=True)
     parser.add_argument("--scenario", default=None)
+    parser.add_argument("--policy", default=None)
     parser.add_argument("--state", default=None)
     parser.add_argument("--strict-schema", action="store_true")
     parser.add_argument("--verify-chain", action=argparse.BooleanOptionalAction, default=True)
@@ -331,7 +329,7 @@ def cmd_check(argv: list[str]) -> int:
     try:
         scenario_path = Path(args.scenario) if args.scenario else _infer_scenario(trace_scenario)
         scenario, scenario_text = load_yaml(scenario_path)
-        policy_path = resolve_policy(None, scenario_path, scenario)
+        policy_path = resolve_policy(args.policy, scenario_path, scenario)
         policy, policy_text = load_yaml(policy_path)
     except ConfigError as exc:
         return fail("E_CONFIG", str(exc), EXIT_USAGE)
@@ -376,9 +374,15 @@ def cmd_check(argv: list[str]) -> int:
         return fail("E_TRACE_CORRUPT", str(exc), EXIT_CORRUPT)
 
     policy_hash = "sha256:" + hashlib.sha256(policy_text.encode()).hexdigest()
-    charges = state.get("charges", [])
-    task_done = all(inv.get("status") == "PAID" for inv in state.get("invoices", []))
-    task_done = bool(task_done and state.get("invoices"))
+    saves = [
+        event
+        for event in events
+        if isinstance(event, dict)
+        and event.get("tool") == SAVE_ODRL
+        and (event.get("args") or {}).get("op") == "write"
+        and event.get("outcome") != "error"
+        and (event.get("detail") or {}).get("phase") == "tool_result"
+    ]
     report = {
         "api_version": "v1",
         "ledger_hash": state.get("ledger_hash"),
@@ -387,8 +391,8 @@ def cmd_check(argv: list[str]) -> int:
         "run_id": run_id,
         "scenario": scenario.get("scenario"),
         "seed": seed,
-        "side_effect_count": len(charges) if isinstance(charges, list) else 0,
-        "task_completion": task_done,
+        "side_effect_count": len(saves),
+        "task_completion": bool(saves),
         "verdict": outcome["verdict"],
     }
     report_out = args.report_out or str(Path("reports") / f"{run_id}.verdict.json")
@@ -433,8 +437,10 @@ def _trace_seed(events: list[dict[str, Any]], fallback: int) -> int:
 def cmd_diagnose(argv: list[str]) -> int:
     """Execute `agentcrash diagnose` (exit 0 patch, 2 usage, 4 rejected).
 
-    Fixture-backed by default: the v0 double-charge failure maps to the
-    reference reconcile-then-same-key-retry patch. Passing traces are
+    Fixture-backed by default: a failing ODRL trace maps to the
+    scenario's reference patch (reconcile-first for ambiguous saves,
+    strict validation gate for sloppy converts, version re-read for
+    concurrent edits). Passing traces are
     refused (exit 2). When LLAMA_BASE_URL is set the live
     OpenAI-compatible path is tried first (opt-in, slow); transport
     failures fall back to the fixture, but schema-invalid model output is
@@ -533,6 +539,7 @@ def cmd_diagnose(argv: list[str]) -> int:
                 verdict_summary=json.dumps(results, sort_keys=True),
                 base_policy=base_policy,
                 model=args.model,
+                source_run_id=run_id,
             )
         except PolicyRejectedError as exc:
             return fail("E_POLICY_REJECTED", str(exc), EXIT_POLICY_REJECTED)
@@ -543,7 +550,12 @@ def cmd_diagnose(argv: list[str]) -> int:
                 file=sys.stderr,
             )
     if patch_doc is None:
-        patch_doc = reference_patch_for(str(scenario.get("scenario", "")), run_id)
+        try:
+            patch_doc = reference_patch_for(str(scenario.get("scenario", "")), run_id)
+        except ValueError as exc:
+            return fail("E_CONFIG", str(exc), EXIT_USAGE)
+    if isinstance(patch_doc, dict):
+        patch_doc.setdefault("source_run_id", run_id)
     try:
         validate_patch_data(patch_doc)
     except PolicyRejectedError as exc:
@@ -597,12 +609,11 @@ def cmd_diagnose(argv: list[str]) -> int:
         )
     else:
         print(
-            "diagnosis: blind retry_same on ambiguous charge_card timeout "
-            "caused duplicate charge"
+            "diagnosis: blind retry_same on ambiguous save_odrl timeout " "caused a duplicate save"
         )
         print(
             f"proposed: {rule.get('rule')}/{rule.get('tool')} -> {rule.get('action')}"
-            "(get_transaction_status) + require idempotency key"
+            "(re-read save_odrl by version, rewrite only when missing)"
         )
     print(f"patch={out_path} (policy_patch/v1, {len(patch_doc['patch']['rules'])} rule)")
     print(diff_policies(base_policy, new_policy))
@@ -732,8 +743,16 @@ def cmd_replay(argv: list[str]) -> int:
         for row in before["results"]
         if row["passed"] and not after_rows.get(row["id"], {}).get("passed")
     )
-    invoices = new_state.get("invoices", [])
-    task_status = invoices[0].get("status", "?") if invoices else "n/a"
+    saves = [
+        event
+        for event in new_events
+        if isinstance(event, dict)
+        and event.get("tool") == SAVE_ODRL
+        and (event.get("args") or {}).get("op") == "write"
+        and event.get("outcome") != "error"
+        and (event.get("detail") or {}).get("phase") == "tool_result"
+    ]
+    task_status = f"{len(saves)} save(s)"
 
     regression: list[dict[str, Any]] = []
     if not args.no_regression:
@@ -835,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     if not raw or raw[0] in ("-h", "--help"):
         print("usage: agentcrash [--version] {run, check, diagnose, replay} ...")
-        print("  run: execute an agent against a chaos scenario (offline, stub/fake)")
+        print("  run: execute the live NL-to-ODRL agent against a chaos scenario")
         print("  check: deterministically verify invariants against a trace")
         print("  diagnose: propose a policy patch for a failing trace (read-only)")
         print("  replay: re-run a trace scenario under a patched policy + regression")

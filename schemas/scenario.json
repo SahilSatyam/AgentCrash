@@ -38,7 +38,7 @@
         "type": "object",
         "required": ["at_step", "kind", "params"],
         "properties": {
-          "at_step": {"type": "integer", "minimum": 1},
+          "at_step": {"type": ["integer", "null"], "minimum": 1},
           "kind": {
             "type": "string",
             "enum": [

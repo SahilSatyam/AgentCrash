@@ -8,8 +8,11 @@ from pathlib import Path
 from agentcrash.cli import cmd_check
 from agentcrash.scan_pii import scan_files, scan_text
 
-GOLDEN = Path("traces/golden/timeout_retry-seed42.jsonl")
-GOLDEN_STATE = Path("traces/golden/timeout_retry-seed42.state.json")
+REPO = Path(__file__).resolve().parent.parent
+GOLDEN = REPO / "tests" / "fixtures" / "traces" / "odrl_convert_timeout-naive-seed42.jsonl"
+GOLDEN_STATE = (
+    REPO / "tests" / "fixtures" / "traces" / "odrl_convert_timeout-naive-seed42.state.json"
+)
 
 
 def test_placeholders_are_exempt() -> None:

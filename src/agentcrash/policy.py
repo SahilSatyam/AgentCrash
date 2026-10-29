@@ -221,93 +221,6 @@ def diff_policies(old: dict[str, Any], new: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def reference_patch(source_run_id: str) -> dict[str, Any]:
-    """Return the fixture-backed v0 fix for the double-charge trace.
-
-    Reconcile-before-retry: on an ambiguous ``charge_card`` timeout, read
-    ``get_transaction_status`` first, then retry at most once reusing the
-    same idempotency key so the ledger dedups the commit.
-    """
-    return {
-        "schema_version": "policy_patch/v1",
-        "source_run_id": source_run_id,
-        "rationale": (
-            "Blind retry_same on an ambiguous charge_card timeout committed "
-            "twice. Reconcile first via get_transaction_status, then retry "
-            "at most once with the same idempotency key."
-        ),
-        "patch": {
-            "rules": [
-                {
-                    "rule": "on_tool_timeout",
-                    "tool": "charge_card",
-                    "action": "check_then_act",
-                    "check": {"tool": "get_transaction_status", "by": "idempotency_key"},
-                    "retry_with_idempotency_key": True,
-                    "max_retries": 1,
-                }
-            ]
-        },
-    }
-
-
-def reference_patch_s2(source_run_id: str) -> dict[str, Any]:
-    """Return the fixture-backed M1 fix for the poisoned-doc trace.
-
-    Confirmation gate: retrieved text is untrusted, so mutating calls
-    shaped by doc content need a recorded confirmation (above $100);
-    the agent summarizes instead of acting.
-    """
-    return {
-        "schema_version": "policy_patch/v1",
-        "source_run_id": source_run_id,
-        "rationale": (
-            "Agent acted on an untrusted doc instruction without confirmation. "
-            "Gate mutating calls behind a recorded confirmation; summarize instead."
-        ),
-        "patch": {
-            "rules": [
-                {
-                    "rule": "on_untrusted_content",
-                    "tool": "read_doc",
-                    "action": "require_confirmation",
-                    "confirmation": {
-                        "above_amount_cents": 10000,
-                        "mutating_from_doc": "deny_without_approval",
-                    },
-                }
-            ]
-        },
-    }
-
-
-def reference_patch_s3(source_run_id: str) -> dict[str, Any]:
-    """Return the fixture-backed M1 fix for the stale-read trace.
-
-    Version re-read: re-read the record before a mutating write and carry
-    the fresh version, so the concurrent update is preserved.
-    """
-    return {
-        "schema_version": "policy_patch/v1",
-        "source_run_id": source_run_id,
-        "rationale": (
-            "Blind write with a stale version overwrote the concurrent change. "
-            "Re-read before mutating writes and carry the fresh version."
-        ),
-        "patch": {
-            "rules": [
-                {
-                    "rule": "on_stale_read",
-                    "tool": "key_value_store",
-                    "action": "check_then_act",
-                    "check": {"tool": "key_value_store", "by": "version"},
-                    "retry": {"max_attempts": 1, "require_idempotency_key": False},
-                }
-            ]
-        },
-    }
-
-
 def reference_patch_s4_validate(source_run_id: str) -> dict[str, Any]:
     """Return the fixture-backed S4 fix for invalid or poisoned saves.
 
@@ -366,17 +279,44 @@ def reference_patch_s4_fresh(source_run_id: str) -> dict[str, Any]:
     }
 
 
+def reference_patch_s4_reconcile(source_run_id: str) -> dict[str, Any]:
+    """Return the fixture-backed fix for the ambiguous-save trace.
+
+    Reconcile-first: on a ``save_odrl`` TIMEOUT, re-read the record
+    version and rewrite only when the save is actually missing, keeping
+    saves exactly-once. Carries the strict validation gate and freshness
+    proof from the fixed converter policy.
+    """
+    return {
+        "schema_version": "policy_patch/v1",
+        "source_run_id": source_run_id,
+        "rationale": (
+            "Blind retry after an ambiguous save_odrl timeout double-saved. "
+            "Re-read the record version first and rewrite only when missing."
+        ),
+        "patch": {
+            "rules": [
+                {
+                    "rule": "on_tool_timeout",
+                    "tool": "save_odrl",
+                    "action": "check_then_act",
+                    "check": {"tool": "save_odrl", "by": "version"},
+                    "retry": {"max_attempts": 1, "require_idempotency_key": False},
+                }
+            ]
+        },
+    }
+
+
 def reference_patch_for(scenario_id: str, source_run_id: str) -> dict[str, Any]:
     """Return the fixture-backed reference patch for ``scenario_id``."""
-    if scenario_id == "poisoned_document":
-        return reference_patch_s2(source_run_id)
-    if scenario_id == "concurrent_update":
-        return reference_patch_s3(source_run_id)
     if scenario_id in ("odrl_convert", "odrl_convert_poisoned"):
         return reference_patch_s4_validate(source_run_id)
     if scenario_id == "odrl_convert_concurrent":
         return reference_patch_s4_fresh(source_run_id)
-    return reference_patch(source_run_id)
+    if scenario_id == "odrl_convert_timeout":
+        return reference_patch_s4_reconcile(source_run_id)
+    raise ValueError(f"no reference patch for scenario {scenario_id!r}")
 
 
 def fetch_live_patch(
@@ -386,13 +326,16 @@ def fetch_live_patch(
     base_policy: dict[str, Any],
     model: str,
     timeout_s: int = 30,
+    source_run_id: str = "",
 ) -> dict[str, Any] | None:
     """Ask an OpenAI-compatible model for a patch; None means fall back.
 
     Only runs when ``LLAMA_BASE_URL`` is set (opt-in live path, F.5).
     Transport failures return None so the caller falls back to the
     fixture-backed reference patch. A 200 response that is not a valid
-    ``policy_patch/v1`` raises :exc:`PolicyRejectedError`.
+    ``policy_patch/v1`` raises :exc:`PolicyRejectedError`. When the model
+    omits ``source_run_id`` (it is never shown the id), ``source_run_id``
+    backfills it before validation.
     """
     base_url = os.environ.get("LLAMA_BASE_URL", "").strip()
     if not base_url:
@@ -407,7 +350,21 @@ def fetch_live_patch(
                     "content": (
                         "Propose a recovery-policy fix as a single JSON "
                         "policy_patch/v1 document with one rule. Reply with "
-                        "JSON only, no prose."
+                        "JSON only, no prose. The document MUST contain: "
+                        'schema_version (exactly "policy_patch/v1"), '
+                        "rationale (one sentence), and patch (an object "
+                        "with a rules array; each rule has rule, tool, "
+                        "action, check, and retry). Do not include "
+                        "source_run_id; the harness fills it in. Example: "
+                        '{"schema_version": "policy_patch/v1", '
+                        '"rationale": "...", "patch": {"rules": '
+                        '[{"rule": "on_tool_timeout", '
+                        '"tool": "save_odrl", '
+                        '"action": "check_then_act", "check": '
+                        '{"tool": "save_odrl", '
+                        '"by": "version"}, "retry": '
+                        '{"max_attempts": 1, '
+                        '"require_idempotency_key": false}}]}}'
                     ),
                 },
                 {
@@ -419,7 +376,6 @@ def fetch_live_patch(
                     ),
                 },
             ],
-            "response_format": {"type": "json_object"},
         }
     ).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -433,8 +389,13 @@ def fetch_live_patch(
     except (OSError, ValueError):
         return None
     try:
-        content = payload["choices"][0]["message"]["content"]
-        data = json.loads(content)
-    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        content = payload["choices"][0]["message"].get("content") or ""
+        start = content.find("{")
+        if start < 0:
+            raise ValueError(f"no JSON object in model content: {content[:200]!r}")
+        data, _ = json.JSONDecoder().raw_decode(content, start)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise PolicyRejectedError(f"live model returned unparsable output ({exc})") from exc
+    if isinstance(data, dict) and source_run_id:
+        data.setdefault("source_run_id", source_run_id)
     return validate_patch_data(data, source=f"live model {model!r}")

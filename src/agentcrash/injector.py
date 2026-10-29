@@ -1,12 +1,16 @@
 """Fault injector: declarative schedule loaded from scenario.yaml.
 
-Supported v0 faults: ``timeout_after_commit`` (commit, then report TIMEOUT
+Supported faults: ``timeout_after_commit`` (commit, then report TIMEOUT
 with the simulated latency) and ``timeout_before_commit`` (report TIMEOUT
-without committing). ``at_step`` matches the agent-loop step (1-based); an
-optional ``params.tool`` constrains the fault to one tool. Schema-valid but
-v0-inert kinds (``poisoned_doc``, ``concurrent_update``) parse and never
-fire. Anything else raises :class:`UnknownFaultError` so the CLI can refuse
-the run before writing any trace. No wall-clock, no network, no model calls.
+without committing). A fault fires either at a loop step (``at_step``,
+1-based) or on the Nth matching tool call (``at_step: null`` with
+``params`` ``tool``/``op``/``occurrence``); step indices are fragile under
+live agents, so call-count triggers are preferred for new scenarios. An
+optional ``params.tool`` constrains the fault to one tool.
+Schema-valid but inert kinds (``poisoned_doc``, ``concurrent_update``)
+parse and never fire as timeouts. Anything else raises
+:class:`UnknownFaultError` so the CLI can refuse the run before writing
+any trace. No wall-clock, no network, no model calls.
 """
 
 from __future__ import annotations
@@ -72,6 +76,30 @@ class FaultSchedule:
             return fault
         return None
 
+    @staticmethod
+    def _call_matches(fault: dict[str, Any], tool: str, op: str | None, occurrence: int) -> bool:
+        """True when a call-count fault fires on this tool call."""
+        if fault.get("at_step") is not None:
+            return False
+        params = fault.get("params", {}) or {}
+        target = params.get("tool")
+        if target is not None and target != tool:
+            return False
+        want_op = params.get("op")
+        if want_op is not None and want_op != op:
+            return False
+        want_n = params.get("occurrence", 1)
+        return want_n == occurrence
+
+    def fault_for_call(self, tool: str, op: str | None, occurrence: int) -> dict[str, Any] | None:
+        """Return the timeout fault firing on this tool call, if any."""
+        for fault in self._faults:
+            if fault.get("kind") not in TIMEOUT_KINDS:
+                continue
+            if self._call_matches(fault, tool, op, occurrence):
+                return fault
+        return None
+
     def concurrent_for(self, step: int, tool: str) -> dict[str, Any] | None:
         """Return the ``concurrent_update`` fault firing at ``step``, if any.
 
@@ -89,4 +117,15 @@ class FaultSchedule:
             if target is not None and target != tool:
                 continue
             return fault
+        return None
+
+    def concurrent_for_call(
+        self, tool: str, op: str | None, occurrence: int
+    ) -> dict[str, Any] | None:
+        """Return the rival-write fault firing before this tool call, if any."""
+        for fault in self._faults:
+            if fault.get("kind") != "concurrent_update":
+                continue
+            if self._call_matches(fault, tool, op, occurrence):
+                return fault
         return None

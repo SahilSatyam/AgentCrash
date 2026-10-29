@@ -1,42 +1,54 @@
-"""Ledger: idempotency dedup collapse, keyless-duplicate bug, hash stability."""
+"""Ledger: versioned writes, stale-conflict flags, hash stability."""
 
 from agentcrash.ledger import Ledger
 
 
-def test_keyed_retry_collapses_to_one_row() -> None:
+def test_seeded_record_reads_at_version_1() -> None:
     ledger = Ledger()
-    ledger.add_invoice(9821, "Acme Paper Co", 150.0)
-    first = ledger.charge(9821, 150.0, idempotency_key="inv-9821-a3f")
-    second = ledger.charge(9821, 150.0, idempotency_key="inv-9821-a3f")
-    assert first == second
-    assert len(ledger.charges) == 1
-    assert ledger.invoices[9821]["status"] == "PAID"
+    ledger.kv_seed("odrl-policy-1", {})
+    assert ledger.kv_read("odrl-policy-1") == {"value": {}, "version": 1}
 
 
-def test_keyless_retry_creates_duplicate_rows_v0_bug() -> None:
+def test_fresh_write_bumps_version_without_conflict() -> None:
     ledger = Ledger()
-    ledger.add_invoice(9821, "Acme Paper Co", 150.0)
-    ledger.charge(9821, 150.0, idempotency_key=None)
-    ledger.charge(9821, 150.0, idempotency_key=None)
-    assert len(ledger.charges) == 2
-    assert ledger.charges[0]["charge_id"] != ledger.charges[1]["charge_id"]
+    ledger.kv_seed("odrl-policy-1", {})
+    written = ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
+    assert written == {"version": 2, "conflict": False}
+    assert ledger.kv_read("odrl-policy-1")["version"] == 2
 
 
-def test_different_keys_do_not_collapse() -> None:
+def test_stale_write_still_commits_but_flags_conflict() -> None:
     ledger = Ledger()
-    ledger.add_invoice(9821, "Acme Paper Co", 150.0)
-    ledger.charge(9821, 150.0, idempotency_key="inv-9821-a3f")
-    ledger.charge(9821, 150.0, idempotency_key="inv-9821-b71")
-    assert len(ledger.charges) == 2
+    ledger.kv_seed("odrl-policy-1", {})
+    ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
+    stale = ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
+    assert stale == {"version": 3, "conflict": True}
+    assert ledger.kv_read("odrl-policy-1")["version"] == 3
+
+
+def test_concurrent_update_preserved_in_snapshot() -> None:
+    ledger = Ledger()
+    ledger.kv_seed("odrl-policy-1", {})
+    applied = ledger.kv_apply_concurrent("odrl-policy-1", {"note": "rival"})
+    assert applied["version_after"] == 2
+    snapshot = ledger.snapshot("r")
+    assert snapshot["record_versions"][0]["value"] == {"note": "rival"}
+
+
+def test_record_doc_tracks_retrieved_bytes() -> None:
+    ledger = Ledger()
+    ledger.record_doc("access-request-1", "tests/fixtures/odrl_nl.yaml#sloppy_offer_v1", "benign")
+    snapshot = ledger.snapshot("r")
+    assert snapshot["docs"][0]["doc_id"] == "access-request-1"
 
 
 def test_ledger_hash_stable_and_matches_snapshot() -> None:
-    run_id = "a3f9c1d2e4b50607"
+    run_id = "ea7d6c8084456233"
 
     def build() -> Ledger:
         ledger = Ledger()
-        ledger.add_invoice(9821, "Acme Paper Co", 150.0)
-        ledger.charge(9821, 150.0, idempotency_key="inv-9821-a3f")
+        ledger.kv_seed("odrl-policy-1", {})
+        ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
         return ledger
 
     first = build().snapshot(run_id)

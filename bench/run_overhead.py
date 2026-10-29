@@ -29,18 +29,18 @@ REPEATS = 5
 def _harness_write(writer: TraceWriter, i: int) -> None:
     writer.write(
         step=i,
-        tool="charge_card",
-        args={"amount_cents": 10000 + i, "idempotency_key": f"inv-9821-{i:04d}"},
+        tool="save_odrl",
+        args={"record": "odrl-policy-1", "expected_version": i},
         outcome="success",
         latency=300,
-        detail={"phase": "tool_result", "data": {"charge_id": f"ch_{i:05d}"}},
+        detail={"phase": "tool_result", "data": {"version": i + 2}},
     )
 
 
 def _envelope(i: int) -> dict:
     return {
-        "args": {"amount_cents": 10000 + i, "idempotency_key": f"inv-9821-{i:04d}"},
-        "detail": {"data": {"charge_id": f"ch_{i:05d}"}, "phase": "tool_result"},
+        "args": {"record": "odrl-policy-1", "expected_version": i},
+        "detail": {"data": {"version": i + 2}, "phase": "tool_result"},
         "event_id": f"evt_bench_{i:04d}",
         "injector_event": None,
         "latency": 300,
@@ -50,7 +50,7 @@ def _envelope(i: int) -> dict:
         "run_id": "bench",
         "scenario": "bench",
         "step": i,
-        "tool": "charge_card",
+        "tool": "save_odrl",
         "ts_virtual": i * 50,
     }
 

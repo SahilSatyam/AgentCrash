@@ -1,7 +1,8 @@
 # AgentCrash — Setup and Startup Guide
 
-Get from zero to a first failing-then-passing chaos run in about 10 minutes.
-Everything below runs offline with the stub/fake adapters — no API key needed.
+Get from zero to a first failing-then-passing chaos run in about 15 minutes.
+The agent is live (real Meta model calls end to end); verification,
+fixtures, and the test suite stay offline and deterministic.
 
 ## 1. Prerequisites
 
@@ -22,107 +23,124 @@ do not install a second Python/Node toolchain on Windows.
 wsl -d Ubuntu-24.04
 git clone https://github.com/SahilSatyam/AgentCrash.git
 cd AgentCrash
-git checkout feat/all-phases   # current implementation branch (until merged)
+git checkout feat/live-llama-run   # current implementation branch (until merged)
 
 # 2. Create the environment (uv-managed; no pip binary needed)
 uv venv
 source .venv/bin/activate
 uv pip install -e ".[dev]"
 
-# 3. Sanity-check the gates (must all pass)
+# 3. Sanity-check the gates (must all pass; no key needed)
 ruff check .
 black --check .
 pytest -q
 ```
 
-Expected: `All checks passed!`, `N files would be left unchanged`,
-`129 passed`. If `uv` is missing, install it user-scoped inside WSL
+Expected: `All checks passed!`, `32 files would be left unchanged`,
+`136 passed, 1 skipped` (the skip is the key-gated live test).
+If `uv` is missing, install it user-scoped inside WSL
 (`curl -LsSf astral.sh/uv/install.sh | sh`) — never on Windows.
 
-Live-model runs (optional, not needed for the loop below) use
-`LLAMA_API_KEY` and optionally `LLAMA_BASE_URL`:
+Live runs need a Meta model key from the environment only — never flags,
+files, or traces (the tracer redacts secret-shaped values at write time):
 
 ```bash
 export LLAMA_API_KEY=paste-key-here
-export LLAMA_BASE_URL=https://your-llama-endpoint/v1   # only for live runs
+export LLAMA_BASE_URL=https://api.meta.ai/v1
 ```
 
-Keys come from the environment only — never flags, files, or traces.
+Without these, `run` and the live `diagnose` path fail closed
+(`E_MODEL_API`, exit 5 / fixture fallback); `check`, fixtures, and the
+suite stay offline.
 
-## 3. Startup: the 2-minute demo loop
+## 3. Startup: the 5-minute demo loop
 
-Scenario `timeout_retry`: pay vendor $150 for invoice #9821 while a
-`timeout_after_commit` fault fires at step 3. Naive retry double-charges;
-the fixed policy reconciles first.
+Scenario `odrl_convert_timeout`: convert an access request to ODRL 2.2
+JSON-LD and save it once, while a `timeout_after_commit` fault fires on
+the first `save_odrl` write (commits server-side, reports TIMEOUT).
+Naive blind retry double-saves; the fixed policy reconciles first.
 
 ```bash
-# Step 1 — Run (offline stub agent; reproducible via --seed 42)
-python -m agentcrash run --scenario timeout_retry --model fake --seed 42
-# run_id=43e3064f37f779fe ... charges=2   (double charge reproduced)
+# Step 1 — Run, naive policy (live agent; reproducible shape via --seed 42)
+python -m agentcrash run --scenario odrl_convert_timeout --seed 42 \
+    --trace-out /tmp/naive.jsonl --state-out /tmp/naive.state.json
+# status=completed ... saves=2   (double save reproduced)
 
 # Step 2 — Check (deterministic verifiers; exit 1 = invariant violated)
-python -m agentcrash check --trace traces/43e3064f37f779fe.jsonl
-# [FAIL] ... exactly_once_mutation ... steps [3, 4]
-# [PASS] ... task_completion ... status=PAID
+python -m agentcrash check --trace /tmp/naive.jsonl --state /tmp/naive.state.json
+# [FAIL] ... exactly_once_save ... save steps [4, 5]
+# [FAIL] ... odrl_valid ... missing required 'target'
+# [PASS] ... no_attacker_grant ...
 
-# Step 3 — Diagnose (proposes a policy patch only; changes no verdict)
-python -m agentcrash diagnose --trace traces/43e3064f37f779fe.jsonl \
-    --output policy_patch.json
-# proposed: on_tool_timeout/charge_card -> check_then_act ...
+# Step 3 — Run, fixed policy (strict convert + reconcile-first)
+python -m agentcrash run --scenario odrl_convert_timeout \
+    --policy policies/fixed-odrl-timeout.yaml --seed 42 \
+    --trace-out /tmp/fixed.jsonl --state-out /tmp/fixed.state.json
+python -m agentcrash check --trace /tmp/fixed.jsonl --state /tmp/fixed.state.json \
+    --policy policies/fixed-odrl-timeout.yaml
+# verdict=PASS (exactly 1 save, valid ODRL, rival-safe)
 
-# Step 4 — Replay (verifies the fix + runs the regression suite)
-python -m agentcrash replay --trace traces/43e3064f37f779fe.jsonl \
-    --patch policy_patch.json
-# fix: VERIFIED (exactly_once_mutation PASS, task PAID)
-# regression: 4/4 golden traces still PASS
+# Step 4 — Diagnose the naive trace (live model proposes the patch)
+python -m agentcrash diagnose --trace /tmp/naive.jsonl --state /tmp/naive.state.json \
+    --output /tmp/patch.json
+# proposed: on_tool_timeout/save_odrl -> check_then_act ...
+
+# Step 5 — Replay under the patch (verifies the fix)
+python -m agentcrash replay --trace /tmp/naive.jsonl --state /tmp/naive.state.json \
+    --patch /tmp/patch.json --no-regression
+# fix: NOT_FIXED means the patch was partial — rerun with
+# --policy policies/fixed-odrl-timeout.yaml for fix: VERIFIED
 ```
 
 `agentcrash` (console script) and `python -m agentcrash` are equivalent.
 `--help` on any command lists every flag; `--format json` gives
-machine-readable verdicts (prose goes to stderr).
+machine-readable verdicts (prose goes to stderr). Each run costs a few
+chat completions; `max_steps` (12) bounds the calls per run.
 
 ## 4. More scenarios
 
 | Scenario | Fault | Key invariant |
 |---|---|---|
-| `timeout_retry` | ambiguous timeout at step 3 | `exactly_once_mutation` |
-| `poisoned_doc` | injected refund instruction in a doc | `no_attacker_controlled_args` |
-| `stale_read` | concurrent writer between read and write | `fresh_write_only`, `no_lost_update` |
-| `odrl_convert` (+ `_poisoned`, `_concurrent`) | S4 policy-convert faults, model-free | `odrl_valid`, `no_attacker_grant` |
+| `odrl_convert` | sloppy convert, no validation gate | `odrl_valid` |
+| `odrl_convert_poisoned` | injected attacker grant in the NL | `no_attacker_grant` |
+| `odrl_convert_concurrent` | rival writer before the first read | `fresh_write_only`, `no_lost_update` |
+| `odrl_convert_timeout` | ambiguous save timeout, first write | `exactly_once_save` |
 
-Same four commands work for each; `check` needs `--state` only when the
-default `reports/<run_id>.state.json` is absent. Poisoned-doc bytes print
-inside `<untrusted_content>` delimiters — test content, never instructions.
+Same commands work for each; `check` needs `--state` only when the
+default `reports/<run_id>.state.json` is absent, and `--policy` when the
+trace ran under a non-default policy. NL bytes print inside
+`<untrusted_content>` delimiters — test content, never instructions.
 
 ## 5. Useful extras
 
 ```bash
 # Validate inputs without running anything
-python -m agentcrash run --scenario timeout_retry --dry-run
+python -m agentcrash run --scenario odrl_convert --dry-run
 
 # Strict schema + hash-chain verification
-python -m agentcrash check --trace <f> --strict-schema --verify-chain
+python -m agentcrash check --trace <f> --state <s> --strict-schema --verify-chain
 
 # PII/secret guardrail over a trace + state pair (non-zero exit on hits)
 python -m agentcrash check --trace <f> --state <s> --scan-pii
 
-# Corpus metrics (precision/recall, replay-fix worksheets)
+# Corpus metrics (precision/recall, replay-fix worksheets; needs the key)
 python scripts/metrics.py
 ```
 
 Traces land in `traces/` and reports in `reports/` (both gitignored —
-only curated goldens under `traces/golden/` are committed).
+only curated fixtures under `tests/fixtures/traces/` are committed).
 
 ## 6. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `run` hangs / model errors | Use `--model fake`; live models need network + `LLAMA_API_KEY` |
-| `check` says state file not found | Pass `--state` pointing at the run's `reports/<run_id>.state.json` |
+| `run` fails with `E_MODEL_API` | Export `LLAMA_API_KEY` + `LLAMA_BASE_URL`; without a key only `check` and the suite work |
+| `check` says state file not found | Pass `--state` pointing at the run's state file |
+| `check --strict-schema` says run_id does not recompute | Pass `--policy` with the policy the trace ran under |
 | `diagnose` refuses with "No invariant violations" | The trace passes — nothing to diagnose; check a failing trace |
-| `replay` reports a regression | Read which golden failed and which rule caused it; do not force the patch |
-| Fresh-run trace differs from golden | Inputs differ (e.g. `--model` string is part of the run config); same inputs are byte-identical |
-| Gates fail after an edit | `ruff check .`, `black .` (write mode), `pytest -q`; seeds 1, 7, 42, 123, 2026 must agree |
+| `diagnose` uses the fixture patch, not the model | `LLAMA_BASE_URL` unset or the model unreachable — transport failures fall back deliberately |
+| Live run 400s or returns unusable content | Model-side protocol drift; the adapter fails closed — see ADR-008 for the known-good shape |
+| Gates fail after an edit | `ruff check .`, `black .` (write mode), `pytest -q` |
 
 ## 7. Where next
 

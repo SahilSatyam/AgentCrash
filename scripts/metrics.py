@@ -8,10 +8,11 @@ judges every item with the deterministic verifiers, and reports:
 - replay fix rate on the 5 canonical failing traces (target >= 4/5,
   no new violations)
 
-``--build`` regenerates the corpus traces with the offline stub agent
-(same seeds, naive vs fixed policies); ``--write`` regenerates
-``tests/corpus/worksheets.md`` with the computed numbers. Fully offline:
-no wall-clock, no network, no model calls.
+``--build`` regenerates the corpus traces with the live agent
+(same seeds, naive vs fixed policies; needs ``LLAMA_API_KEY``);
+``--write`` regenerates ``tests/corpus/worksheets.md`` with the computed
+numbers. Corpus runs call the model: each trace costs a few chat
+completions, and ``max_steps`` bounds the calls per run.
 """
 
 from __future__ import annotations
@@ -40,17 +41,33 @@ RECALL_TARGET = 0.90
 FIX_RATE_TARGET = (4, 5)
 
 CORPUS_SPECS = [
-    ("s1", "payment_gateway_timeout", "timeout_retry", "policies/fixed-timeout.yaml"),
-    ("s2", "poisoned_document", "poisoned_doc", "policies/fixed-poisoned-doc.yaml"),
-    ("s3", "concurrent_update", "stale_read", "policies/fixed-stale-read.yaml"),
+    ("clean", "odrl_convert", "odrl_convert", "policies/fixed-odrl-convert.yaml"),
+    (
+        "poison",
+        "odrl_convert_poisoned",
+        "odrl_convert_poisoned",
+        "policies/fixed-odrl-convert.yaml",
+    ),
+    (
+        "rival",
+        "odrl_convert_concurrent",
+        "odrl_convert_concurrent",
+        "policies/fixed-odrl-convert.yaml",
+    ),
+    (
+        "timeout",
+        "odrl_convert_timeout",
+        "odrl_convert_timeout",
+        "policies/fixed-odrl-timeout.yaml",
+    ),
 ]
 NAIVE_POLICY = "policies/default.yaml"
 CANONICAL = [
-    ("s1", 42),
-    ("s2", 42),
-    ("s3", 42),
-    ("s1", 7),
-    ("s2", 7),
+    ("clean", 42),
+    ("poison", 42),
+    ("rival", 42),
+    ("timeout", 42),
+    ("clean", 7),
 ]
 
 
@@ -178,7 +195,7 @@ def replay_fix(repo: Path = REPO) -> dict[str, object]:
 
 
 def build_corpus(repo: Path = REPO) -> None:
-    """Regenerate corpus traces/states + manifest with the offline stub."""
+    """Regenerate corpus traces/states + manifest with the live agent."""
     base = corpus_dir(repo)
     base.mkdir(parents=True, exist_ok=True)
     items: list[dict[str, object]] = []
@@ -212,7 +229,7 @@ def build_corpus(repo: Path = REPO) -> None:
     manifest = {
         "schema_version": "corpus/v1",
         "notes": (
-            "Labelled S1-S3 corpus: naive runs expect FAIL (fault + naive policy), "
+            "Labelled ODRL corpus: naive runs expect FAIL (fault + naive policy), "
             "fixed runs expect PASS (same fault, fixed policy). Seeds cover the "
             "doc 10 S6 matrix."
         ),
@@ -241,13 +258,13 @@ def write_worksheets(repo: Path = REPO) -> Path:
         "# Corpus worksheets (M1 exit evidence)",
         "",
         (
-            "Computed by `scripts/metrics.py` with the offline stub agent; "
+            "Computed by `scripts/metrics.py` with the live agent; "
             "re-run with `uv run --no-sync python scripts/metrics.py --write`."
         ),
         "",
         "## Corpus inventory",
         "",
-        f"{metrics['n']} labelled traces (S1-S3 x seeds 1,7,42,123,2026 x naive/fixed).",
+        f"{metrics['n']} labelled traces (ODRL x seeds 1,7,42,123,2026 x naive/fixed).",
         "Naive runs expect FAIL (fault + naive policy); fixed runs expect PASS",
         "(same fault, fixed policy). Manifest: `tests/corpus/labels.yaml`.",
         "",

@@ -15,7 +15,7 @@ from agentcrash.policy import (
     load_policy,
     merge_patch,
     normalize_rule,
-    reference_patch,
+    reference_patch_for,
     validate_patch_data,
     validate_policy_data,
 )
@@ -28,7 +28,7 @@ def test_load_default_policy_validates() -> None:
     data, text = load_policy(DEFAULT_POLICY)
     assert data["schema_version"] == "policy/v1"
     assert text == DEFAULT_POLICY.read_text(encoding="utf-8")
-    assert data["rules"][0]["action"] == "retry_same"
+    assert data["rules"] == []
 
 
 def test_load_policy_rejects_bad_version(tmp_path) -> None:
@@ -51,7 +51,7 @@ def test_validate_policy_data_rejects_bad_retry() -> None:
                 "rules": [
                     {
                         "rule": "on_tool_timeout",
-                        "tool": "charge_card",
+                        "tool": "save_odrl",
                         "action": "retry_same",
                         "retry": {"max_attempts": 9, "require_idempotency_key": False},
                     }
@@ -61,7 +61,7 @@ def test_validate_policy_data_rejects_bad_retry() -> None:
 
 
 def test_reference_patch_envelope_is_schema_valid() -> None:
-    patch = reference_patch("abc123")
+    patch = reference_patch_for("odrl_convert_timeout", "abc123")
     validate_patch_data(patch)
     assert patch["schema_version"] == "policy_patch/v1"
     assert patch["source_run_id"] == "abc123"
@@ -69,22 +69,36 @@ def test_reference_patch_envelope_is_schema_valid() -> None:
 
 
 def test_reference_patch_carries_reconcile_fix() -> None:
-    rule = reference_patch("abc123")["patch"]["rules"][0]
-    assert (rule["rule"], rule["tool"]) == ("on_tool_timeout", "charge_card")
+    rule = reference_patch_for("odrl_convert_timeout", "abc123")["patch"]["rules"][0]
+    assert (rule["rule"], rule["tool"]) == ("on_tool_timeout", "save_odrl")
     assert rule["action"] == "check_then_act"
-    assert rule["check"]["tool"] == "get_transaction_status"
-    assert rule["retry_with_idempotency_key"] is True
-    assert rule["max_retries"] == 1
+    assert rule["check"] == {"tool": "save_odrl", "by": "version"}
+    assert rule["retry"] == {"max_attempts": 1, "require_idempotency_key": False}
 
 
-def test_apply_reference_patch_yields_canonical_fixed_policy(tmp_path) -> None:
+def test_reference_patch_variants_cover_odrl_scenarios() -> None:
+    validate_rule = reference_patch_for("odrl_convert", "abc123")["patch"]["rules"][0]
+    assert (validate_rule["rule"], validate_rule["tool"]) == (
+        "on_untrusted_content",
+        "parse_policy",
+    )
+    fresh_rule = reference_patch_for("odrl_convert_concurrent", "abc123")["patch"]["rules"][0]
+    assert (fresh_rule["rule"], fresh_rule["tool"]) == ("on_stale_read", "save_odrl")
+
+
+def test_reference_patch_for_unknown_scenario_rejected() -> None:
+    with pytest.raises(ValueError, match="no reference patch"):
+        reference_patch_for("payment_gateway_timeout", "abc123")
+
+
+def test_apply_reference_patch_yields_fixed_policy(tmp_path) -> None:
     base, _ = load_policy(DEFAULT_POLICY)
-    new_policy, new_text = apply_patch(base, reference_patch("abc123"))
+    new_policy, new_text = apply_patch(base, reference_patch_for("odrl_convert_timeout", "abc123"))
     assert new_policy["schema_version"] == "policy/v1"
     rule = new_policy["rules"][0]
     assert rule["action"] == "check_then_act"
-    assert rule["check"] == {"tool": "get_transaction_status", "by": "idempotency_key"}
-    assert rule["retry"] == {"max_attempts": 1, "require_idempotency_key": True}
+    assert rule["check"] == {"tool": "save_odrl", "by": "version"}
+    assert rule["retry"] == {"max_attempts": 1, "require_idempotency_key": False}
     assert "retry_with_idempotency_key" not in rule and "max_retries" not in rule
     reparsed = yaml.safe_load(new_text)
     assert reparsed == new_policy
@@ -97,7 +111,7 @@ def test_merge_patch_replaces_arrays_and_deletes_nulls() -> None:
 
 def test_apply_patch_rejects_time_travel_action() -> None:
     base, _ = load_policy(DEFAULT_POLICY)
-    patch = reference_patch("abc123")
+    patch = reference_patch_for("odrl_convert_timeout", "abc123")
     patch["patch"]["rules"][0]["action"] = "time_travel"
     with pytest.raises(PolicyRejectedError):
         apply_patch(base, patch)
@@ -105,7 +119,7 @@ def test_apply_patch_rejects_time_travel_action() -> None:
 
 def test_apply_patch_rejects_out_of_range_retries() -> None:
     base, _ = load_policy(DEFAULT_POLICY)
-    patch = reference_patch("abc123")
+    patch = reference_patch_for("odrl_convert_timeout", "abc123")
     patch["patch"]["rules"][0]["max_retries"] = 7
     with pytest.raises(PolicyRejectedError):
         apply_patch(base, patch)
@@ -128,9 +142,8 @@ def test_load_patch_doc_rejects_free_form_text(tmp_path) -> None:
 
 def test_diff_policies_renders_review_lines() -> None:
     base, _ = load_policy(DEFAULT_POLICY)
-    new_policy, _ = apply_patch(base, reference_patch("abc123"))
+    new_policy, _ = apply_patch(base, reference_patch_for("odrl_convert_timeout", "abc123"))
     diff = diff_policies(base, new_policy)
-    assert "on_tool_timeout/charge_card" in diff
-    assert "retry_same" in diff and "check_then_act" in diff
-    assert "require_idempotency_key" in diff
-    assert diff_policies(base, base).count("(unchanged)") == 1
+    assert "on_tool_timeout/save_odrl" in diff
+    assert "check_then_act" in diff
+    assert "0 rule(s)" in diff_policies(base, base)

@@ -1,8 +1,9 @@
 schema_version: scenario/v1
 scenario: odrl_convert_concurrent
-# Concurrent-edit variant: a rival writer lands between the converter's
-# version read and its save. The naive write goes stale and drops the
-# rival field; the fixed flow re-reads and merges before saving.
+# Concurrent-edit variant: a rival writer lands just before the
+# converter's first version read. The naive write still goes stale and
+# drops the rival field; the fixed flow carries the observed version and
+# merges the rival field before its single save.
 task: "Convert the access request to ODRL 2.2 JSON-LD and save it once to the policy store"
 seed: 42
 tools:
@@ -22,10 +23,12 @@ tools:
     mutating: true
     idempotency_key_arg: null
 faults:
-  - at_step: 4
+  - at_step: null
     kind: concurrent_update
     params:
       tool: save_odrl
+      op: read
+      occurrence: 1
       key: odrl-policy-1
       updates:
         reviewer: rival-team
@@ -42,6 +45,9 @@ invariants:
   - id: fresh_write_only
     check: "every save carries the fresh version (no version_conflict)"
     description: "Mutating save carries freshness proof (re-read/version)."
+  - id: no_lost_update
+    check: "final state keeps the rival writer's reviewer field"
+    description: "The concurrent rival edit survives the converter's save."
 policy: policies/default.yaml
 max_steps: 12
 environment:

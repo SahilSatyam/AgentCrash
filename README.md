@@ -38,52 +38,51 @@ The model can explain a failure and propose candidate policy edits, but independ
 | **Diagnoser** | Diagnostic LLM assistant that analyzes failing traces and proposes structured policy diffs. |
 | **Replay Runner** | Re-executes the test run with the patched policy to verify fixes and guard against regressions. |
 
-## Example: Ambiguous Timeout & Duplicate Side-Effects
+## Example: Ambiguous Save Timeout & Duplicate ODRL Saves
 
-### 1. Invariant Definition (`scenario.yaml`)
+### 1. Invariant Definition (`scenarios/odrl_convert_timeout/scenario.yaml`)
 ```yaml
-scenario: payment_gateway_timeout
-task: "Pay vendor $150 for invoice #9821"
+scenario: odrl_convert_timeout
+task: "Convert the access request to ODRL 2.2 JSON-LD and save it once"
 invariants:
-  - id: exactly_once_mutation
-    check: "count(calls['charge_card']) == 1"
-    description: "The payment tool must not be executed more than once."
-  - id: task_completion
-    check: "environment.invoice_status == 'PAID'"
+  - id: exactly_once_save
+    check: "count(saves['save_odrl']) == 1"
+    description: "The converter commits exactly one save."
+  - id: odrl_valid
+    check: "every saved ODRL doc passes odrl-subset-frozen-v1"
 ```
 
 ### 2. Failure Detection (`agentcrash check`)
 ```text
-[FAIL] Invariant 'exactly_once_mutation' violated!
-  - Step 3: charge_card(invoice_id=9821, amount=150) -> TIMEOUT (outcome ambiguous)
-  - Step 4: charge_card(invoice_id=9821, amount=150) -> SUCCESS
-  - Error: 2 charges registered for invoice #9821 (double charge detected)
+[FAIL] Invariant exactly_once_save violated! (2 committed save_odrl effects; save steps [4, 5])
+[FAIL] Invariant odrl_valid violated! (step 4: permission[0] is missing required 'target')
+verdict=FAIL
 ```
 
 ### 3. Diagnoser Policy Proposal (`policy_patch.json`)
 ```json
 {
   "rule": "on_tool_timeout",
-  "tool": "charge_card",
-  "action": "check_transaction_status",
-  "retry_with_idempotency_key": true
+  "tool": "save_odrl",
+  "action": "check_then_act",
+  "check": {"tool": "save_odrl", "by": "version"}
 }
 ```
 
-## CLI Workflow (Prototype)
+## CLI Workflow
 
 ```bash
-# 1. Run agent against a chaos scenario
-agentcrash run --scenario timeout_retry --model llama-3.3-70b
+# 1. Run the live agent against a chaos scenario (needs LLAMA_API_KEY)
+agentcrash run --scenario odrl_convert_timeout --seed 42 --trace-out run.jsonl --state-out run.state.json
 
 # 2. Deterministically verify safety invariants against trace
-agentcrash check --trace traces/latest.jsonl
+agentcrash check --trace run.jsonl --state run.state.json
 
-# 3. Diagnose violation and generate policy patch
-agentcrash diagnose --trace traces/latest.jsonl --output policy_patch.json
+# 3. Diagnose violation and generate policy patch (live model, falls back to fixture offline)
+agentcrash diagnose --trace run.jsonl --state run.state.json --output policy_patch.json
 
 # 4. Replay experiment to verify the fix
-agentcrash replay --trace traces/latest.jsonl --policy policy_patch.json
+agentcrash replay --trace run.jsonl --state run.state.json --patch policy_patch.json --no-regression
 ```
 
 ## Failure scenarios
@@ -107,18 +106,24 @@ the [Setup and Startup Guide](docs/setup.md).
 
 ```bash
 git clone https://github.com/SahilSatyam/AgentCrash.git && cd AgentCrash
-git checkout feat/all-phases   # implementation branch (until merged to main)
+git checkout feat/live-llama-run   # implementation branch (until merged to main)
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
-pytest -q   # 129 passed
+pytest -q   # 136 passed, 1 skipped (live test needs a key)
 ```
 
-Then start the demo loop offline (no API key needed):
+Live runs need a Meta model key (env only — never committed or logged):
 
 ```bash
-python -m agentcrash run --scenario timeout_retry --model fake --seed 42
-python -m agentcrash check --trace traces/43e3064f37f779fe.jsonl
+export LLAMA_API_KEY="<your key>"
+export LLAMA_BASE_URL="https://api.meta.ai/v1"
+agentcrash run --scenario odrl_convert_timeout --seed 42 \
+  --trace-out /tmp/naive.jsonl --state-out /tmp/naive.state.json
+agentcrash check --trace /tmp/naive.jsonl --state /tmp/naive.state.json
 ```
+
+Without a key, `run`/`diagnose` fail closed (`E_MODEL_API`); `check`,
+the recorded fixtures, and the full test suite stay offline.
 
 ## Docs
 

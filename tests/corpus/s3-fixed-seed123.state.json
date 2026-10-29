@@ -1,1 +1,0 @@
-{"charges":[],"docs":[],"invoices":[],"ledger_hash":"sha256:93a614d48456392e0c57ffc705b5048aadc36d08fddcedbcb0155a1df116d1ce","record_versions":[{"record":"vendor-address","value":{"street":"2 Elm St","suite":"B"},"version":3}],"run_id":"519daa55e992bccf","schema_version":"env_state/v1"}
