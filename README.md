@@ -106,3 +106,7 @@ See [`docs/`](docs/) — start with the [System Overview](docs/overview.md).
 ## Goal
 
 Make agent reliability measurable and regression-testable: reproduce the failure, inspect the evidence, apply the fix, and verify the result.
+n
+## Plan
+
+Execution blueprint (draft — no implementation until approved): [`docs/plans/2026-10-29-agentcrash-implementation.md`](docs/plans/2026-10-29-agentcrash-implementation.md).
