@@ -846,18 +846,144 @@ def _regress_golden(
     return {"trace": golden.name, "verdict": outcome["verdict"]}
 
 
+def cmd_serve(argv: list[str]) -> int:
+    """Serve the AgentCrash UI (reads ui/, local only)."""
+    import argparse
+
+    from agentcrash.web import find_repo_root, serve_ui
+
+    parser = argparse.ArgumentParser(prog="agentcrash serve")
+    parser.add_argument("--port", type=int, default=8901)
+    parser.add_argument("--bind", default="127.0.0.1")
+    args = parser.parse_args(argv)
+
+    root = find_repo_root()
+    if root is None:
+        print(
+            "agentcrash serve: E_CONFIG: ui/index.html not found (run from the repo root)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    return serve_ui(args.port, args.bind, root / "ui")
+
+
+def cmd_seed(argv: list[str]) -> int:
+    """Seed the UI database with scripted fixture-backed runs (offline)."""
+    parser = argparse.ArgumentParser(prog="agentcrash seed")
+    parser.parse_args(argv)
+
+    from agentcrash.seed import seed_database
+    from agentcrash.web import find_repo_root
+
+    root = find_repo_root()
+    if root is None:
+        print(
+            "agentcrash seed: E_CONFIG: scenarios/ not found (run from the repo root)",
+            file=sys.stderr,
+        )
+        return EXIT_USAGE
+    keys = seed_database(root)
+    print(f"seeded {len(keys)} runs into {root / 'agentcrash.db'}")
+    return EXIT_OK
+
+
+def cmd_optimize_prompts(argv: list[str]) -> int:
+    """Run the budgeted DSPy conversion-instruction probe (live model)."""
+    parser = argparse.ArgumentParser(prog="agentcrash optimize-prompts")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--max-live-calls", type=int, default=24)
+    parser.add_argument("--val-size", type=int, default=3)
+    parser.add_argument("--compile-rows", type=int, default=4)
+    parser.add_argument("--bsize", type=int, default=2)
+    parser.add_argument("--num-candidates", type=int, default=2)
+    parser.add_argument("--max-steps", type=int, default=1)
+    parser.add_argument("--max-demos", type=int, default=2)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--out", default="prompts/pack-v1.json")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(argv)
+    if args.max_live_calls < 1:
+        parser.error("--max-live-calls must be >= 1")
+
+    def fail(code: str, hint: str, exit_code: int) -> int:
+        payload = {"code": code, "exit": exit_code, "hint": hint, "command": "optimize-prompts"}
+        if args.json:
+            print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+        else:
+            print(f"agentcrash optimize-prompts: {code}: {hint}", file=sys.stderr)
+        return exit_code
+
+    from agentcrash.adapter import (
+        DEFAULT_MODEL,
+        LLAMA_KEY_ENV,
+        LLAMA_URL_ENV,
+        live_timeout_s,
+    )
+    from agentcrash.dspy_opt import ProbeBudgetExceeded, run_probe, write_pack
+
+    model = args.model or DEFAULT_MODEL
+    api_key = os.environ.get(LLAMA_KEY_ENV, "").strip()
+    api_base = os.environ.get(LLAMA_URL_ENV, "").strip()
+    if not api_key or not api_base:
+        return fail(
+            "E_MODEL_API",
+            f"live model {model!r} requires {LLAMA_KEY_ENV} and {LLAMA_URL_ENV}; "
+            "refusing live probe",
+            EXIT_RUNABORTED,
+        )
+    try:
+        report = run_probe(
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+            timeout_s=live_timeout_s(),
+            val_size=args.val_size,
+            compile_rows=args.compile_rows,
+            bsize=args.bsize,
+            num_candidates=args.num_candidates,
+            max_steps=args.max_steps,
+            max_demos=args.max_demos,
+            max_live_calls=args.max_live_calls,
+            seed=args.seed,
+        )
+    except ProbeBudgetExceeded as exc:
+        return fail("E_BUDGET", str(exc), EXIT_RUNABORTED)
+    print(
+        json.dumps(
+            {k: report[k] for k in ("model", "baseline_val", "optimized_val", "live_calls")},
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    try:
+        pack_path = write_pack(report, args.out, force=args.force)
+    except FileExistsError as exc:
+        return fail("E_CONFIG", str(exc), EXIT_USAGE)
+    if pack_path is None:
+        print("no improvement over baseline; no prompt pack written")
+    else:
+        print(f"wrote prompt pack {pack_path}")
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
-    """Dispatch subcommands: run, check, diagnose, replay."""
+    """Dispatch subcommands: run, check, diagnose, replay, serve."""
     raw = list(sys.argv[1:] if argv is None else argv)
     if "--version" in raw:
         print(f"agentcrash {__version__}")
         return EXIT_OK
     if not raw or raw[0] in ("-h", "--help"):
-        print("usage: agentcrash [--version] {run, check, diagnose, replay} ...")
+        print(
+            "usage: agentcrash [--version] {run, check, diagnose, replay, serve, seed, optimize-prompts} ..."
+        )
         print("  run: execute the live NL-to-ODRL agent against a chaos scenario")
         print("  check: deterministically verify invariants against a trace")
         print("  diagnose: propose a policy patch for a failing trace (read-only)")
         print("  replay: re-run a trace scenario under a patched policy + regression")
+        print("  serve: browse the ODRL/Policy Studio and Agent Lab viewer (reads ui/, local only)")
+        print("  seed: replay scripted fixture runs into agentcrash.db (offline, no model)")
+        print("  optimize-prompts: budgeted DSPy probe of the NL-to-ODRL instruction (live model)")
         return EXIT_OK if raw else EXIT_USAGE
     command, rest = raw[0], raw[1:]
     if command == "run":
@@ -868,6 +994,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_diagnose(rest)
     if command == "replay":
         return cmd_replay(rest)
+    if command == "serve":
+        return cmd_serve(rest)
+    if command == "seed":
+        return cmd_seed(rest)
+    if command == "optimize-prompts":
+        return cmd_optimize_prompts(rest)
     print(f"agentcrash: unknown command {command!r}", file=sys.stderr)
     return EXIT_USAGE
 

@@ -28,6 +28,112 @@ KNOWN_FAULT_KINDS = (
 #: Kinds that change tool execution in v0.
 TIMEOUT_KINDS = ("timeout_after_commit", "timeout_before_commit")
 
+#: Generalized fault catalog: every supported chaos kind with its effect,
+#: whether it works on pasted (inline) runs, and its parameter schema.
+#: New kinds are added here (plus harness support); the API and UI read
+#: this table instead of hardcoding fault lists.
+FAULT_CATALOG: tuple[dict[str, object], ...] = (
+    {
+        "kind": "timeout_after_commit",
+        "description": "Ambiguous timeout: the write commits, then the tool reports TIMEOUT.",
+        "effect": "committed=True with the simulated latency; naive blind retry double-saves.",
+        "inline_supported": True,
+        "default_params": {
+            "tool": "save_odrl",
+            "op": "write",
+            "occurrence": 1,
+            "simulated_latency_ms": 2000,
+        },
+        "params_schema": [
+            {"name": "tool", "type": "string", "required": False},
+            {"name": "op", "type": "string", "required": False},
+            {"name": "occurrence", "type": "integer", "required": False, "default": 1},
+            {"name": "simulated_latency_ms", "type": "integer", "required": False, "default": 2000},
+        ],
+    },
+    {
+        "kind": "timeout_before_commit",
+        "description": "Clean timeout: the tool reports TIMEOUT without committing.",
+        "effect": "committed=False with the simulated latency; retries are safe but blind ones waste work.",
+        "inline_supported": True,
+        "default_params": {
+            "tool": "save_odrl",
+            "op": "write",
+            "occurrence": 1,
+            "simulated_latency_ms": 2000,
+        },
+        "params_schema": [
+            {"name": "tool", "type": "string", "required": False},
+            {"name": "op", "type": "string", "required": False},
+            {"name": "occurrence", "type": "integer", "required": False, "default": 1},
+            {"name": "simulated_latency_ms", "type": "integer", "required": False, "default": 2000},
+        ],
+    },
+    {
+        "kind": "concurrent_update",
+        "description": "Rival writer lands just before the agent read.",
+        "effect": "applies updates to the record first; blind writes lose them.",
+        "inline_supported": True,
+        "default_params": {
+            "tool": "save_odrl",
+            "op": "read",
+            "occurrence": 1,
+            "key": "odrl-policy-1",
+            "updates": {"reviewer": "rival-team"},
+        },
+        "params_schema": [
+            {"name": "tool", "type": "string", "required": False},
+            {"name": "op", "type": "string", "required": False},
+            {"name": "occurrence", "type": "integer", "required": False, "default": 1},
+            {"name": "key", "type": "string", "required": True},
+            {"name": "updates", "type": "object", "required": True},
+        ],
+    },
+    {
+        "kind": "poisoned_doc",
+        "description": "Injected instruction in a fixture document (inert marker; fixture bytes do the work).",
+        "effect": "documentation-only; the retrieved bytes carry the injection.",
+        "inline_supported": False,
+        "default_params": {"tool": "parse_policy"},
+        "params_schema": [
+            {"name": "tool", "type": "string", "required": False},
+            {"name": "doc_id", "type": "string", "required": False},
+            {"name": "fixture_key", "type": "string", "required": False},
+        ],
+    },
+)
+
+
+def catalog_entry(kind: str) -> dict[str, object]:
+    """Return the catalog entry for ``kind`` or raise :exc:`UnknownFaultError`."""
+    for entry in FAULT_CATALOG:
+        if entry.get("kind") == kind:
+            return entry
+    raise UnknownFaultError(
+        f"unknown fault kind {kind!r}; known kinds: " + ", ".join(KNOWN_FAULT_KINDS)
+    )
+
+
+def validate_fault_entry(kind: object, params: object) -> dict[str, object]:
+    """Normalize one ``{"kind", "params"}`` fault against the catalog."""
+    import copy
+
+    if not isinstance(kind, str):
+        raise UnknownFaultError(f"fault kind must be a string, got {type(kind).__name__}")
+    entry = catalog_entry(kind)
+    if not isinstance(params, dict):
+        raise UnknownFaultError(f"fault {kind!r} params must be an object")
+    schema = entry.get("params_schema", [])
+    assert isinstance(schema, list)
+    known = {field["name"] for field in schema if isinstance(field, dict)}
+    unknown = sorted(set(params) - known)
+    if unknown:
+        raise UnknownFaultError(f"fault {kind!r} has unknown params: " + ", ".join(unknown))
+    merged = copy.deepcopy(entry.get("default_params", {}))
+    assert isinstance(merged, dict)
+    merged.update(params)
+    return {"kind": kind, "at_step": None, "params": merged}
+
 
 class UnknownFaultError(ValueError):
     """Raised when scenario.yaml declares a fault kind the injector cannot run."""

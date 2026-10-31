@@ -30,3 +30,6 @@ demo-evidence/
 .env
 *.pem
 *.key
+
+# UI database (runtime data)
+agentcrash.db

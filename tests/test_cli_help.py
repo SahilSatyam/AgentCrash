@@ -52,6 +52,7 @@ COMMAND_FLAGS = {
         "--no-regression",
         "--report-out",
     ],
+    "seed": [],
 }
 
 

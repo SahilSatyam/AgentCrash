@@ -37,6 +37,19 @@ def _reply(monkeypatch, content):
     monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
 
 
+def test_live_timeout_s_default_and_override(monkeypatch) -> None:
+    from agentcrash.adapter import LIVE_HTTP_TIMEOUT_S, live_timeout_s
+
+    monkeypatch.delenv("LLAMA_TIMEOUT_S", raising=False)
+    assert live_timeout_s() == LIVE_HTTP_TIMEOUT_S
+    monkeypatch.setenv("LLAMA_TIMEOUT_S", "180")
+    assert live_timeout_s() == 180.0
+    monkeypatch.setenv("LLAMA_TIMEOUT_S", "bogus")
+    assert live_timeout_s() == LIVE_HTTP_TIMEOUT_S
+    monkeypatch.setenv("LLAMA_TIMEOUT_S", "-5")
+    assert live_timeout_s() == LIVE_HTTP_TIMEOUT_S
+
+
 def _live_env(monkeypatch):
     monkeypatch.setenv("LLAMA_API_KEY", "test-key")
     monkeypatch.setenv("LLAMA_BASE_URL", "https://llama.example/v1")

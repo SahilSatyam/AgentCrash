@@ -1,0 +1,67 @@
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix odrl: <http://www.w3.org/ns/odrl/2/> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <urn:agentcrash:> .
+
+# SHACL shapes for the frozen ODRL subset (odrl-subset-frozen-v1).
+#
+# These shapes validate the RDF data model of an ODRL 2.2 JSON-LD policy
+# document in the W3C ODRL 2.2 namespace (see schemas/odrl-2.2.ttl).
+# JSON-LD processing artifacts (@context) and JSON container checks
+# (the permission value must be a non-empty list of objects) are guarded
+# in Python at the JSON->RDF boundary (odrl.validate_odrl_subset); every
+# content constraint below is real SHACL evaluated by pySHACL.
+#
+# Conventions:
+# - The converted document node is always ex:doc (one document per graph).
+# - Each permission rule is linked directly via odrl:permission; rule
+#   order for indexed messages comes from conversion order, preserved
+#   by the caller.
+# - No sh:closed anywhere: the frozen subset ignores extra properties.
+
+ex:PolicyShape a sh:NodeShape ;
+    sh:targetNode ex:doc ;
+    sh:property [
+        sh:path rdf:type ;
+        sh:minCount 1 ;
+        sh:in ( odrl:Agreement odrl:Offer odrl:Set ) ;
+    ] ;
+    sh:property [
+        sh:path odrl:uid ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+    ] ;
+    sh:property [
+        sh:path odrl:permission ;
+        sh:node ex:RuleShape ;
+    ] .
+
+ex:RuleShape a sh:NodeShape ;
+    sh:property [
+        sh:path odrl:action ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+    ] ;
+    sh:property [
+        sh:path odrl:target ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+    ] ;
+    sh:property [
+        sh:path odrl:assignee ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+    ] .
+
+ex:AgreementShape a sh:NodeShape ;
+    sh:targetClass odrl:Agreement ;
+    sh:property [
+        sh:path odrl:assigner ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+        sh:minLength 1 ;
+    ] .

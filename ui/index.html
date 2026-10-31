@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentCrash — ODRL Studio, Policy Studio, Agent Lab</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="brand">
+    <p class="wordmark">AgentCrash</p>
+    <p class="tagline">Chaos engineering for tool-using agents</p>
+  </div>
+  <nav aria-label="Views">
+    <div class="tabs" role="tablist" aria-label="AgentCrash views">
+      <button type="button" role="tab" id="tab-odrl" aria-controls="panel-odrl"
+        aria-selected="true">ODRL Studio</button>
+      <button type="button" role="tab" id="tab-policy" aria-controls="panel-policy"
+        aria-selected="false" tabindex="-1">Policy Studio</button>
+      <button type="button" role="tab" id="tab-agent" aria-controls="panel-agent"
+        aria-selected="false" tabindex="-1">Agent Lab</button>
+    </div>
+  </nav>
+</header>
+
+<main>
+  <section id="panel-odrl" role="tabpanel" aria-labelledby="tab-odrl" tabindex="0">
+    <h1 class="view-title">Paste a policy, get back ODRL</h1>
+    <form id="odrl-form" class="convert-form">
+      <label class="field" for="nl-input">Natural-language policy
+        <span class="field-meta" id="nl-count"></span>
+      </label>
+      <textarea id="nl-input" rows="6" maxlength="4000"
+        placeholder="Allow the research team to use dataset-7 for model training. Convert this request to ODRL and save it to the policy store."></textarea>
+      <div class="convert-controls">
+        <fieldset class="fault-picker" id="fault-list">
+          <legend>Faults to inject</legend>
+        </fieldset>
+        <div class="segmented" role="group" aria-label="Policy variant">
+          <button type="button" id="pol-naive" aria-pressed="true">Naive</button>
+          <button type="button" id="pol-fixed" aria-pressed="false">Fixed</button>
+        </div>
+        <label class="case-field seed">Seed
+          <input id="seed-input" type="number" value="42" min="0" max="2147483647">
+        </label>
+        <button type="submit" id="convert-btn" class="primary">Convert to ODRL</button>
+        <span class="examples">Try:
+          <button type="button" id="example-benign">benign request</button>
+          <button type="button" id="example-poisoned">injected request</button>
+        </span>
+      </div>
+      <p class="form-hint">Runs the live agent against your text with the chosen faults and policy.
+        Needs <code>LLAMA_API_KEY</code> and <code>LLAMA_BASE_URL</code> where the server runs.</p>
+    </form>
+    <p id="odrl-status" role="status"></p>
+    <div id="odrl-result" hidden>
+      <div class="studio-grid two">
+        <article class="pane" aria-labelledby="odrl-req-h">
+          <h2 id="odrl-req-h">Request</h2>
+          <blockquote class="nl-text" id="odrl-req-text"></blockquote>
+        </article>
+        <article class="pane" aria-labelledby="odrl-doc-h">
+          <h2 id="odrl-doc-h">Converted ODRL</h2>
+          <p class="pane-sub" id="odrl-doc-meta"></p>
+          <pre class="code" id="odrl-doc-code" tabindex="0"></pre>
+        </article>
+      </div>
+      <p class="outcome" id="odrl-outcome"></p>
+      <button type="button" id="odrl-view-run" class="primary">View this run in Agent Lab</button>
+    </div>
+  </section>
+
+  <section id="panel-policy" role="tabpanel" aria-labelledby="tab-policy" tabindex="0" hidden>
+    <h1 class="view-title">Every request with its converted ODRL</h1>
+    <div class="filters" role="group" aria-label="Pair filters">
+      <label class="case-field">Scenario
+        <select id="policy-filter-scenario"><option value="">All scenarios</option></select>
+      </label>
+      <label class="case-field">Validity
+        <select id="policy-filter-valid">
+          <option value="">Valid and invalid</option>
+          <option value="true">Valid only</option>
+          <option value="false">Invalid only</option>
+        </select>
+      </label>
+      <label class="case-field">Safety
+        <select id="policy-filter-attacker">
+          <option value="">All</option>
+          <option value="true">Attacker grant saved</option>
+          <option value="false">No attacker grant</option>
+        </select>
+      </label>
+      <p class="pane-sub" id="policy-count" role="status"></p>
+    </div>
+    <div class="pair-grid" id="policy-grid"></div>
+    <p class="empty" id="policy-empty" hidden></p>
+  </section>
+
+  <section id="panel-agent" role="tabpanel" aria-labelledby="tab-agent" tabindex="0" hidden>
+    <h1 class="view-title">Every step of the run, with the evidence</h1>
+    <div class="runbar">
+      <label class="case-field">Run
+        <select id="run-select" aria-label="Recorded runs"></select>
+      </label>
+      <button type="button" id="run-refresh">Refresh</button>
+      <p class="verdict-pill" id="agent-pill" role="status"></p>
+    </div>
+    <p class="empty" id="agent-empty" hidden></p>
+    <div id="agent-view" hidden>
+      <ol class="stepper" id="agent-stepper"></ol>
+      <div class="lab-grid">
+        <article class="pane wide" aria-labelledby="agent-trace-h">
+          <h2 id="agent-trace-h">Trace</h2>
+          <div class="scrubber-row">
+            <label for="agent-scrubber">Step <output id="agent-scrubber-out"></output></label>
+            <input type="range" id="agent-scrubber" min="0" value="0" step="1">
+          </div>
+          <div class="state-strip" id="agent-state-strip" aria-live="polite"></div>
+          <table class="events">
+            <thead><tr><th scope="col">Step</th><th scope="col">Event</th><th scope="col">Detail</th></tr></thead>
+            <tbody id="agent-events-body"></tbody>
+          </table>
+        </article>
+        <div class="lab-side">
+          <article class="pane" aria-labelledby="agent-metrics-h">
+            <h2 id="agent-metrics-h">Run metrics</h2>
+            <div class="state-strip column" id="agent-metrics"></div>
+          </article>
+          <article class="pane" aria-labelledby="agent-verdicts-h">
+            <h2 id="agent-verdicts-h">Verdicts</h2>
+            <ul class="verdicts" id="agent-verdicts"></ul>
+          </article>
+          <article class="pane" aria-labelledby="agent-patch-h">
+            <h2 id="agent-patch-h">Diagnose and replay</h2>
+            <div id="agent-patch"></div>
+            <button type="button" id="agent-replay-fixed" class="primary" hidden>
+              Run fixed policy on same text</button>
+          </article>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="app-footer">
+  <p>Runs are recorded in the local database; traces stay hash-chained JSONL with write-time redaction.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

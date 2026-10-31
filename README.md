@@ -85,6 +85,16 @@ agentcrash diagnose --trace run.jsonl --state run.state.json --output policy_pat
 agentcrash replay --trace run.jsonl --state run.state.json --patch policy_patch.json --no-regression
 ```
 
+### Prompt optimization probe (DSPy, live model)
+
+```bash
+# Budgeted SIMBA search over the NL-to-ODRL conversion instruction.
+# Writes prompts/pack-vN.json only when the optimized instruction beats
+# the frozen baseline on the held-out split; production prompts are never
+# mutated at runtime (packs are adopted explicitly, never automatically).
+agentcrash optimize-prompts --max-live-calls 24 --out prompts/pack-v1.json
+```
+
 ## Failure scenarios
 
 1. **Ambiguous tool timeouts** — a timed-out call with an unknown outcome tempts retries that cause duplicate side effects. *(Initial prototype focus)*
@@ -117,6 +127,7 @@ Live runs need a Meta model key (env only — never committed or logged):
 ```bash
 export LLAMA_API_KEY="<your key>"
 export LLAMA_BASE_URL="https://api.meta.ai/v1"
+export LLAMA_TIMEOUT_S="180"  # optional: per-call model timeout in seconds (default 60)
 agentcrash run --scenario odrl_convert_timeout --seed 42 \
   --trace-out /tmp/naive.jsonl --state-out /tmp/naive.state.json
 agentcrash check --trace /tmp/naive.jsonl --state /tmp/naive.state.json

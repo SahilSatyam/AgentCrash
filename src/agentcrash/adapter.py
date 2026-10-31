@@ -34,7 +34,17 @@ DEFAULT_MODEL = "muse-spark-1.3"
 
 LLAMA_KEY_ENV = "LLAMA_API_KEY"
 LLAMA_URL_ENV = "LLAMA_BASE_URL"
+LLAMA_TIMEOUT_ENV = "LLAMA_TIMEOUT_S"
 LIVE_HTTP_TIMEOUT_S = 60
+
+
+def live_timeout_s() -> float:
+    """Per-call HTTP timeout for the live model (env override in seconds)."""
+    try:
+        value = float(os.environ.get(LLAMA_TIMEOUT_ENV, "").strip() or 0)
+    except ValueError:
+        return LIVE_HTTP_TIMEOUT_S
+    return value if value > 0 else LIVE_HTTP_TIMEOUT_S
 
 
 def build_agent_brief(
@@ -171,6 +181,12 @@ class LlamaAdapter:
 
     def __init__(self, model: str = DEFAULT_MODEL) -> None:
         self._model = model
+        self._last_usage: dict[str, int] = {}
+
+    @property
+    def last_usage(self) -> dict[str, int]:
+        """Token usage reported by the most recent model call (may be empty)."""
+        return dict(self._last_usage)
 
     def complete(
         self,
@@ -179,6 +195,7 @@ class LlamaAdapter:
         timeout_s: float,
     ) -> dict[str, Any]:
         """Return the model's next action as ``{"type": "call"|"done", ...}``."""
+        self._last_usage = {}
         api_key = os.environ.get(LLAMA_KEY_ENV, "").strip()
         base_url = os.environ.get(LLAMA_URL_ENV, "").strip()
         if not api_key or not base_url:
@@ -200,10 +217,17 @@ class LlamaAdapter:
         }
         url = base_url.rstrip("/") + "/chat/completions"
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        wait_s = timeout_s if timeout_s > 0 else LIVE_HTTP_TIMEOUT_S
+        wait_s = timeout_s if timeout_s > 0 else live_timeout_s()
         try:
             with urllib.request.urlopen(request, timeout=wait_s) as response:
                 payload = json.loads(response.read().decode("utf-8"))
+            raw_usage = payload.get("usage", {})
+            if isinstance(raw_usage, dict):
+                self._last_usage = {
+                    key: int(raw_usage[key])
+                    for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                    if isinstance(raw_usage.get(key), int)
+                }
             content = payload["choices"][0]["message"].get("content") or ""
             start = content.find("{")
             if start < 0:
@@ -282,40 +306,62 @@ def load_nl_store(scenario: dict[str, Any]) -> dict[str, dict[str, Any]]:
     canonical home of NL bytes (doc 11 S3); the scenario only names
     ``fixture_key`` entries. Each entry must carry ``naive_odrl`` (sloppy
     converter output) and ``expected_odrl`` (strict converter output).
+
+    A doc may instead carry inline ``text`` (pasted at runtime, e.g. by
+    the UI): it is stored as a ``user_supplied`` untrusted entry with
+    empty candidate ODRLs, so the live model must author the ODRL
+    itself from the request text. Inline docs need no fixture file.
     """
     env = scenario.get("environment", {}) or {}
     documents = env.get("nl_docs", []) or []
     if not documents:
         return {}
+    needs_fixture = any(isinstance(doc, dict) and doc.get("fixture_key") for doc in documents)
     fixture_ref = str(env.get("nl_fixture", ""))
-    if not fixture_ref:
+    entries: dict[str, Any] = {}
+    if needs_fixture and not fixture_ref:
         raise ValueError("scenario declares nl_docs but no environment.nl_fixture")
-    fixture_path = Path(fixture_ref)
-    if not fixture_path.is_absolute():
-        fixture_path = Path.cwd() / fixture_ref
-    try:
-        fixture = yaml.safe_load(fixture_path.read_text(encoding="utf-8")) or {}
-    except OSError as exc:
-        raise ValueError(f"cannot read NL fixture {fixture_ref}: {exc}") from exc
-    entries = fixture.get("docs", {}) or {}
+    if needs_fixture:
+        fixture_path = Path(fixture_ref)
+        if not fixture_path.is_absolute():
+            fixture_path = Path.cwd() / fixture_ref
+        try:
+            fixture = yaml.safe_load(fixture_path.read_text(encoding="utf-8")) or {}
+        except OSError as exc:
+            raise ValueError(f"cannot read NL fixture {fixture_ref}: {exc}") from exc
+        entries = fixture.get("docs", {}) or {}
     store: dict[str, dict[str, Any]] = {}
     for doc in documents:
-        key = doc.get("fixture_key")
-        entry = entries.get(key)
-        if (
-            not isinstance(entry, dict)
-            or "nl" not in entry
-            or "naive_odrl" not in entry
-            or "expected_odrl" not in entry
-        ):
-            raise ValueError(f"NL fixture {fixture_ref} has no ODRL entry {key!r}")
-        store[doc["id"]] = {
-            "text": str(entry["nl"]),
-            "label": str(entry.get("label", "")),
-            "fixture": f"{fixture_ref}#{key}",
-            "naive_odrl": entry["naive_odrl"],
-            "expected_odrl": entry["expected_odrl"],
-        }
+        if not isinstance(doc, dict) or not doc.get("id"):
+            raise ValueError("each nl_docs entry needs an id")
+        if doc.get("fixture_key"):
+            key = doc.get("fixture_key")
+            entry = entries.get(key)
+            if (
+                not isinstance(entry, dict)
+                or "nl" not in entry
+                or "naive_odrl" not in entry
+                or "expected_odrl" not in entry
+            ):
+                raise ValueError(f"NL fixture {fixture_ref} has no ODRL entry {key!r}")
+            store[doc["id"]] = {
+                "text": str(entry["nl"]),
+                "label": str(entry.get("label", "")),
+                "fixture": f"{fixture_ref}#{key}",
+                "naive_odrl": entry["naive_odrl"],
+                "expected_odrl": entry["expected_odrl"],
+            }
+            continue
+        if isinstance(doc.get("text"), str) and doc["text"].strip():
+            store[doc["id"]] = {
+                "text": str(doc["text"]),
+                "label": str(doc.get("label", "user_supplied")),
+                "fixture": "inline:pasted",
+                "naive_odrl": doc.get("naive_odrl", {}),
+                "expected_odrl": doc.get("expected_odrl", {}),
+            }
+            continue
+        raise ValueError(f"nl_docs entry {doc['id']!r} needs fixture_key or non-empty text")
     return store
 
 
@@ -391,6 +437,8 @@ def run_react_loop(
         step = 1
         calls = 0
         saves = 0
+        model_calls = 0
+        usage_total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         status = "completed"
         call_counts: dict[tuple[str, str | None], int] = {}
         ok_counts: dict[str, int] = {}
@@ -400,18 +448,25 @@ def run_react_loop(
                 status = "runaway"
                 break
             action = adapter.complete(messages, registry.tool_names, timeout_s=0)
+            usage = adapter.last_usage
+            model_calls += 1
+            for usage_key in usage_total:
+                usage_total[usage_key] += int(usage.get(usage_key, 0))
             if action.get("type") != "call":
                 break
             tool = str(action["tool"])
             args = dict(action.get("args", {}))
             calls += 1
+            call_detail: dict[str, Any] = {"phase": "tool_call"}
+            if usage:
+                call_detail["model_usage"] = usage
             writer.write(
                 step=step,
                 tool=tool,
                 args=args,
                 outcome="info",
                 ts_virtual=clock.now(),
-                detail={"phase": "tool_call"},
+                detail=call_detail,
             )
             op = args.get("op") if isinstance(args.get("op"), str) else None
             occurrence = call_counts.get((tool, op), 0) + 1
@@ -564,6 +619,8 @@ def run_react_loop(
         "steps": calls,
         "status": status,
         "saves": saves,
+        "model_calls": model_calls,
+        "model_usage_total": usage_total,
         "ledger_hash": snapshot["ledger_hash"],
         "trace_path": trace_path,
         "state_path": state_path,
