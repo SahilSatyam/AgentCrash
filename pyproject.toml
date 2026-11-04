@@ -1,19 +1,26 @@
 [project]
-name = "agentcrash"
-version = "0.1.0"
-description = "Chaos engineering for tool-using AI agents (prototype)"
+name = "agentcrash-core"
+version = "0.2.0"
+description = "Installable reliability framework for agentic workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml",
     "jsonschema",
+]
+
+[project.optional-dependencies]
+host-odrl = [
     "pyshacl",
     "dspy",
     "numpy>=1.26",
 ]
-
-[project.optional-dependencies]
+server = [
+    "fastapi",
+    "uvicorn",
+]
 dev = [
+    "agentcrash-core[host-odrl,server]",
     "pytest",
     "ruff",
     "black",

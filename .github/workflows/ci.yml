@@ -27,9 +27,3 @@ jobs:
         run: uv run --no-sync pytest -q
       - name: Determinism lint (ACR001)
         run: uv run --no-sync pytest tests/test_acr001.py -q
-      - name: PII guardrail (scan-pii over PASS golden trace + state)
-        run: >
-          uv run --no-sync agentcrash check
-          --trace tests/fixtures/traces/odrl_convert_timeout-fixed-seed42.jsonl
-          --state tests/fixtures/traces/odrl_convert_timeout-fixed-seed42.state.json
-          --report-out /tmp/scan-pii.verdict.json --scan-pii

@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentCrash Lab</title>
+<link rel="stylesheet" href="/lab/styles.css">
+</head>
+<body>
+<header><h1>AgentCrash Lab</h1>
+<p>Independent reliability dashboard. One control plane, many projects.</p>
+<label>Project <input id="project" value="odrl-policy-engine"></label>
+<button id="refresh" type="button">Refresh</button></header>
+<main>
+<section><h2>Runs</h2><ul id="runs"></ul></section>
+<section><h2>Run detail</h2><div id="detail"><p>Select a run.</p></div></section>
+</main>
+<script src="/lab/app.js"></script>
+</body>
+</html>

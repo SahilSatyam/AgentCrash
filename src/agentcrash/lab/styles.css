@@ -1,0 +1,7 @@
+/* AgentCrash Lab styles: plain, dependency-free. */
+body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 70rem; }
+header { margin-bottom: 1.5rem; }
+table { border-collapse: collapse; width: 100%; }
+th, td { border: 1px solid #999; padding: 0.3rem 0.6rem; text-align: left; }
+ul { list-style: disc; }
+button { cursor: pointer; }

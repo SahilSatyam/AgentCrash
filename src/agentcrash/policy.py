@@ -1,8 +1,9 @@
 """Policy engine: load/validate ``policy/v1``, apply ``policy_patch/v1``.
 
-A base policy is a YAML mapping validated against ``schemas/policy.json``.
-A diagnoser patch is a JSON document validated against
-``schemas/policy-patch.json``; its ``patch`` member is an RFC 7396 JSON
+A base policy is a YAML mapping validated against the bundled
+``agentcrash/schemas/policy.json``. A diagnoser patch is a JSON document
+validated against the bundled ``agentcrash/schemas/policy-patch.json``;
+its ``patch`` member is an RFC 7396 JSON
 Merge Patch applied onto the base policy (objects merge key-wise, arrays
 and scalars replace, ``null`` deletes). Rule fragments may use the
 ADR-004 shorthand keys (``max_retries``, ``retry_with_idempotency_key``,
@@ -26,7 +27,7 @@ from typing import Any
 import jsonschema
 import yaml
 
-SCHEMA_DIR = Path(__file__).resolve().parent.parent.parent / "schemas"
+SCHEMA_DIR = Path(__file__).resolve().parent / "schemas"
 
 DEFAULT_MODEL = "llama-3.3-70b"
 

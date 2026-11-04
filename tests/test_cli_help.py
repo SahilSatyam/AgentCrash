@@ -7,52 +7,19 @@ import pytest
 from agentcrash.cli import EXIT_OK, EXIT_USAGE, main
 
 COMMAND_FLAGS = {
-    "run": [
-        "--scenario",
-        "--model",
-        "--policy",
-        "--seed",
-        "--max-steps",
-        "--trace-out",
-        "--state-out",
-        "--dry-run",
-        "--json",
-    ],
     "check": [
         "--trace",
-        "--scenario",
+        "--invariant",
+        "--plugin",
         "--state",
-        "--strict-schema",
-        "--verify-chain",
         "--report-out",
         "--format",
         "--scan-pii",
     ],
-    "diagnose": [
-        "--trace",
-        "--output",
-        "--model",
-        "--max-rules",
-        "--state",
-        "--scenario",
-        "--policy",
-        "--verdict",
+    "serve": [
+        "--port",
+        "--bind",
     ],
-    "replay": [
-        "--trace",
-        "--policy",
-        "--patch",
-        "--scenario",
-        "--state",
-        "--model",
-        "--max-steps",
-        "--trace-out",
-        "--state-out",
-        "--regression",
-        "--no-regression",
-        "--report-out",
-    ],
-    "seed": [],
 }
 
 
