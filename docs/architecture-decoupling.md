@@ -1,109 +1,76 @@
-# AgentCrash Decoupling Architecture (v1)
+# AgentCrash architecture: core vs host (v2)
 
-Status: accepted for implementation. Current monolith: `src/agentcrash/` mixes
-host business logic with the reliability framework; `web.py`+`ui/` serve the
-NL-to-ODRL app and Agent Lab from one loopback server backed by `db.py`.
+Status: accepted (0.3.0). The core is domain-free; see ADR-009 in
+`docs/adlc/08-adr-template.md`.
 
-## 1. Component classification
+## 1. Who owns what
 
-| Component (current path) | Owner after split | Notes |
+| Component | Owner | Notes |
 |---|---|---|
-| NL→ODRL conversion, ReAct loop (`adapter.py`) | Host app | Business orchestration; must run without AgentCrash |
-| Synthetic ODRL tools (`tools.py`), ODRL validation (`odrl.py`), SHACL shapes (`schemas/odrl-*.ttl`), prompt packs (`dspy_opt.py`, `prompts/`) | Host app / ODRL extension | Domain-specific; core must not import `rdflib`/`pyshacl`/`dspy` |
-| Trace writer + hash chain + redaction (`tracer.py`), seed (`seed.py`), clock (`clock.py`) | SDK runtime | Generic; keep, add versioned event schema |
-| Fault catalog + schedule (`injector.py`), policy file (`policy.py`), ledger (`ledger.py` as test double) | SDK runtime (generic) + host-provided stores | Generalize params; ledger becomes a host-side test double behind a `StateStore` protocol |
-| Verifier registry + `Verdict` (`verifiers.py` core) | SDK runtime | Keep `Verifier` protocol, `register/get`, strict validation |
-| ODRL invariants (`odrl_valid`, `no_attacker_grant`, `exactly_once_save`, `fresh_write_only`, `no_lost_update`) | ODRL extension (`agentcrash.extensions.odrl`) | Host/extension registers them; core ships only domain-agnostic checks (chain integrity, duplicate mutating effects, missing tool call) |
-| SQLite query layer (`db.py`), run registry, trace/state artifact paths (`traces/`, `reports/`) | Control plane | Multi-project; idempotent ingestion |
-| Loopback server (`web.py`) + `ui/` | Split: host API stays with host; Agent Lab moves to control plane | No shared server; SDK talks to control plane over versioned HTTP, never shared memory |
-| CLI (`cli.py`) | Split: `agentcrash` CLI keeps `check`/`replay`/`serve` (control plane); host gets its own `odrl-host` CLI | |
+| Agent loop, prompts, real tools, business rules | Host workflow | Runs with or without AgentCrash installed |
+| Domain invariants (e.g. "no refund over limit") | Host or plugin package | Registered via `register_verifier`, loaded with `check --plugin` |
+| SDK (`sdk.py`), events (`events.py`), exporter | Core | Observes and injects; never orchestrates |
+| Fault catalog + schedule (`injector.py`) | Core | Faults name no default tool; host names every boundary |
+| Trace writer, hash chain, redaction (`tracer.py`), virtual clock (`clock.py`) | Core | Deterministic, no wall-clock in judged paths |
+| Generic invariants (`invariants.py`, `verifiers.py`), registry (`_registry.py`) | Core | `required_step`, `duplicate_mutating_effect`, `fresh_write_only`, `no_lost_update` |
+| Policy engine (`policy.py`) | Core | `policy/v1`, merge patches, opt-in LLM patch proposal |
+| Synthetic versioned store (`ledger.py`) | Core (test double) | For hosts that want a seeded store in tests |
+| Control plane (`server.py`, `lab/`) | Core | Loopback stdlib server or FastAPI factory (`[server]` extra) |
 
-## 2. Target package structure
+## 2. Package layout
 
 ```
-src/agentcrash/                 # pip install agentcrash — framework only
-  __init__.py                   # exports AgentCrash, WorkflowConfig, verifiers, __version__
-  sdk.py                      # AgentCrash, workflow decorator, run/step CMs, buffered exporter
-  events.py                   # versioned event schema (SCHEMA_VERSION=1), make/validate
-  faults.py                   # generic FaultPolicy, deterministic seeded decisions
-  invariants.py                 # Invariant protocol (alias of Verifier), Evaluation report helpers
-  exporter.py                 # bounded queue, batching, backpressure, graceful degradation
-  server.py                   # control-plane app (stdlib http + optional FastAPI factory)
-  extensions/odrl_verifiers.py  # ODRL invariants; NOT imported by core
-examples/
-  odrl_host/app.py              # independent NL-to-ODRL engine; works with SDK disabled
-  minimal_agent/app.py          # second sample (counter tool); zero ODRL imports
-docs/architecture-decoupling.md # this file
+src/agentcrash/
+  __init__.py     # public API: AgentCrash, WorkflowConfig, invariants, server helpers
+  sdk.py          # run/step context managers, workflow decorator, exporter, faults
+  events.py       # versioned event schema (SCHEMA_VERSION=1)
+  injector.py     # fault catalog + deterministic schedule
+  tracer.py       # JSONL writer, prev_hash chain, redaction
+  clock.py        # virtual clock
+  invariants.py   # RequiredStep, DuplicateMutatingEffect
+  verifiers.py    # FreshWriteOnly, NoLostUpdate, run_verifiers, loaders
+  _registry.py    # Verdict, Verifier protocol, register/get
+  evaluate.py     # evaluate_trace, compare_reports
+  policy.py       # policy/v1 + policy_patch/v1
+  ledger.py       # synthetic versioned store
+  server.py       # control plane
+  cli.py          # check, serve
+  lab/, schemas/  # bundled assets
+examples/minimal_agent/  # stdlib + agentcrash only
 ```
 
-Dependency direction: `examples/*` → `agentcrash` (optional). Core never
-imports `examples`, `odrl`, `dspy`, `pyshacl`, `fastapi` at module import time
-(all lazy/optional).
+Dependency direction: host → `agentcrash`. Core never imports host code
+or heavy stacks at import time; `fastapi` loads lazily.
+`tests/test_generic_core.py` fails if domain vocabulary enters `src/`.
 
 ## 3. Integration contract (v1)
 
 ```python
 from agentcrash import AgentCrash, WorkflowConfig
 
-ac = AgentCrash(WorkflowConfig(project="odrl-policy-engine",
-                               environment="development",
-                               fault_injection=True))
+ac = AgentCrash(WorkflowConfig(project="support-agent", fault_injection=True, seed=7))
+ac.configure_faults({"crm.update": {"kind": "timeout_after_commit", "occurrence": 1}})
 
-@ac.workflow(name="nl-to-odrl")
-async def convert_policy(policy_text: str):
-    return await run_existing_agent(policy_text)  # host-owned
+@ac.workflow(name="triage")
+async def triage(ticket: str):
+    return await run_existing_agent(ticket)  # host-owned
 
-with ac.run(name="policy-conversion") as run:
-    with run.step("parse-policy"):
-        ...  # sync CM; async variant: async with run.astep(...)
+with ac.run(name="triage-manual") as run:
+    with run.step("update-crm") as step:
+        fault = run.maybe_fault("crm.update")
+        step.record_tool("crm.update", inputs={...}, outputs={...})
 ```
 
-Delivery semantics: at-least-once with idempotent ingestion (`event_id`
-primary key; server dedupes). Bounded queue (default 1000, drop-oldest with
-counter); background flush; never blocks host on network failure.
+Delivery: at-least-once with idempotent ingestion (`event_id` primary
+key; server dedupes). Bounded queue (default 1000, drop-oldest with a
+counter); flush on batch threshold or run end; network failures never
+reach host code.
 
-Hash chain: integrity signal only (gapless `event_id`, monotonic `ts`,
-`prev_hash` linkage). Threat model in `sdk.py`: detects accidental loss /
-reordering, NOT malicious tampering (no keys/signatures in v1).
+Hash chain: integrity signal for accidental loss or reordering, not
+tamper resistance (no signatures in v1).
 
-## 4. Migration strategy
+## 4. Risks
 
-Phase 1 (this change): additive only. New modules + examples + tests; zero
-changes to existing modules except `__init__.py` exports and `pyproject`
-extras. All 136 existing tests must stay green.
-Phase 2+: move ODRL loop/tools out of core into `examples/odrl_host` with
-re-export shims; FastAPI bearer-auth; retention/redaction config.
-
-## 5. Risks
-
-- Import-time `pyshacl`/`dspy` cost in core → mitigated: new modules import
-  neither; server factory imports FastAPI lazily.
-- `web.py`/`db.py` single-project schema → server adds `project` column with
-  default so existing rows keep working.
-- Breaking `verifiers` imports → mitigated: registry stays; ODRL verifiers
-  remain registered by `verifiers.py` in v1, duplicated into extension with a
-  deprecation note (removal later, not now).
-
-## 6. Acceptance (this phase)
-
-1. `pip install -e .` works; `from agentcrash import AgentCrash` works.
-2. `examples/odrl_host` runs with `AGENTCRASH_DISABLED=1` (no SDK).
-3. SDK captures a full trace offline (no server) with run/step/tool events.
-4. Deterministic fault forces a failing invariant; verifier reports evidence.
-5. `examples/minimal_agent` passes with zero ODRL imports.
-6. `pytest tests/test_sdk.py tests/test_server_ingestion.py tests/test_second_app.py` green.
-
-## 7. Open follow-ups (not blocking v1)
-
-- Lab page verified at HTTP level (served markup + `/v1` data path) and
-  `app.js` parses cleanly; no browser-rendered check exists in this
-  environment (no JS runtime).
-- SDK flush is batched synchronous I/O on run end / batch threshold —
-  no background-thread exporter yet; per-step calls never touch the network.
-- `adapter.py` / `tools.py` / `odrl.py` / `dspy_opt.py` moved to
-  `agentcrash.extensions.odrl`; thin deprecated shims keep the old import
-  paths working (verified by the untouched legacy suite). `verifiers.py`
-  keeps its public API via the domain-free `_registry.py` split.
-  Full shim removal is a separate breaking-change release.
-- Retention is keep-last-N and/or max-age days per project
-  (`POST /v1/admin/prune`); no per-project quota configuration yet.
+- Adapter sprawl: framework adapters ship as optional extras with lazy
+  imports (roadmap R1).
+- Trace-writer overhead is above the 10% target today (roadmap R7).

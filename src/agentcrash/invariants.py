@@ -2,7 +2,7 @@
 
 These checks reason only about the versioned SDK event schema
 (``step`` / ``tool`` / ``kind`` / ``status``); they never import domain
-stacks (ODRL, SHACL, DSPy). Host and extension packages register
+stacks. Host and plugin packages register
 domain-specific invariants alongside these via
 :mod:`agentcrash._registry`.
 """

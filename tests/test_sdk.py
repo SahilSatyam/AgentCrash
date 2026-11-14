@@ -43,8 +43,9 @@ def test_deterministic_fault_and_redaction():
     ac = AgentCrash(WorkflowConfig(project="p1", fault_injection=True, seed=7))
     ac.configure_faults({"save": {"kind": "timeout_after_commit", "occurrence": 1}})
     with ac.run(name="wf") as run:
-        assert run.maybe_fault("save")["kind"] == "timeout_after_commit"
-        assert run.maybe_fault("save")["kind"] == "timeout_after_commit"  # repeatable
+        assert run.maybe_fault("save")["kind"] == "timeout_after_commit"  # 1st call
+        assert run.maybe_fault("save") is None  # 2nd call: occurrence 1 already fired
+        assert run.maybe_fault("save", call_index=1)["kind"] == "timeout_after_commit"
         assert run.maybe_fault("other") is None
         with run.step("s") as step:
             step.record_tool("t", inputs={"api_key": "secret", "n": 1})
@@ -52,7 +53,16 @@ def test_deterministic_fault_and_redaction():
     assert tool_event["inputs"]["api_key"] == "[REDACTED]"
     assert tool_event["fault"] is None
     fault_events = [e for e in ac.trace(run.run_id) if e["kind"] == "fault"]
-    assert len(fault_events) == 2  # one per maybe_fault("save") call
+    assert len(fault_events) == 2  # one per firing maybe_fault("save") call
+
+
+def test_fault_fires_on_nth_call_per_run():
+    ac = AgentCrash(WorkflowConfig(project="p1", fault_injection=True))
+    ac.configure_faults({"pay": {"kind": "timeout_before_commit", "occurrence": 3}})
+    for _ in range(2):  # counting restarts each run
+        with ac.run(name="wf") as run:
+            fired = [run.maybe_fault("pay") is not None for _ in range(4)]
+        assert fired == [False, False, True, False]
 
 
 def test_disabled_mode_passthrough():

@@ -1,216 +1,257 @@
-﻿# 06 -- Data design (AgentCrash)
+# 06 -- Data design (AgentCrash)
 
 **Status:** Draft -- **Owner:** Startup CTO (interim) -- **Last reviewed:** Phase-gated (no calendar date)
-**Gate:** Approved when the v0 golden trace (`timeout_retry`, seed 42) validates against every schema in this doc via `check --strict-schema`. No day-wise timeline is used anywhere -- only phase/milestone gates.
+**Describes:** `agentcrash-core` 0.3.0. The code is the source of truth. Every field below is taken from `src/agentcrash/`.
 
-## 1. Startup lens and data principles
+## 1. Data principles
 
-For a pre-revenue startup, data design must minimize storage cost and maximize inspectability. Principles: (a) everything a verdict depends on is a plain-text file in git or a local JSONL trace -- no database to operate; (b) schemas are versioned and backward-checked so design-partner traces never silently rot; (c) no real customer PII ever enters the system -- all ledgers are synthetic (invoice #9821 and friends). Research grounding: append-only JSONL event logs are the standard portable trace format for agent observability (human-readable, streamable, replayable offline); idempotency-key ledgers are the standard exactly-once pattern (at-least-once delivery + idempotent consumer, key recorded transactionally with the state change).
+1. **JSON everywhere, files first.** Traces are JSONL, reports and state are JSON, policies are YAML. There is no database. The control plane keeps an in-memory store.
+2. **Versioned schemas.** Each artifact carries a version tag: event `schema_version: 1`, `policy/v1`, `policy_patch/v1`, `env_state/v1`, verdict `api_version: "v1"`.
+3. **Redact at write time.** Secrets and PII-shaped values are replaced before anything is stored, exported or hashed.
+4. **Determinism.** Canonical JSON (sorted keys), integer virtual time, no wall-clock in judged data.
+5. **Integrity signal, not tamper resistance.** Hash chains detect accidental loss or reordering. There is no signing in v1.
 
 ## 2. Data inventory
 
-| Dataset / entity | Purpose | Source / owner | Classification | Retention / deletion |
+| Artifact | Format | Producer | Consumer | Sensitivity |
 |---|---|---|---|---|
-| `scenario.yaml` | Declares task, tools, fault schedule, invariants for one chaos experiment | Authored by developer, owned by CTO | Internal, non-sensitive | Git history forever; deprecated scenarios moved to `scenarios/archive/` |
-| `policy.yaml` + `policy_patch.json` | Recovery policy (retry/idempotency/confirmation) and diagnoser-proposed diffs | Authored by developer, patched by diagnoser, approved by human | Internal, non-sensitive | Git history forever; every applied patch tagged with source `run_id` |
-| Trace JSONL (`traces/<run_id>.jsonl`) | Append-only evidence of one run: every tool call, result, injector event, policy decision | Written by tracer, owned by QA | Internal, synthetic-only (no PII by construction) | Local 90 days; golden traces curated into `traces/golden/` permanently |
-| Environment state snapshot (`reports/<run_id>.state.json`) | Final ledger state the verifiers judged | Written by runner, owned by QA | Internal, synthetic-only | Same as parent trace |
-| Verdict report (`reports/<run_id>.verdict.json`) | Machine-readable pass/fail per invariant | Written by `check`, owned by QA | Internal | Same as parent trace |
+| SDK event stream | JSON events (schema v1) | `AgentCrash` (`sdk.py`, `events.py`) | `POST /v1/events`, `check`, host code | Redacted. Host inputs and outputs may still hold business data. |
+| Trace file | JSONL, one `TraceWriter` envelope per line | `TraceWriter` (`tracer.py`) | `check`, `verify_chain` | Redacted. |
+| Policy | YAML, `policy/v1` | Host | Host runner, `policy.py` | Low. |
+| Policy patch | JSON, `policy_patch/v1` | Host or `fetch_live_patch` | `apply_patch` | Low. Model-proposed, schema-gated. |
+| State snapshot | JSON, `env_state/v1` | `Ledger.snapshot` | `check --state` | Synthetic. |
+| Verdict report | JSON | `check` | CI, humans, `POST /v1/evaluations` | Evidence strings may quote trace steps. |
+| Control-plane store | In-memory dicts | `server.py` | Lab, `/v1` API | Lost on restart. |
 
-## 3. Scenario schema (`scenario.yaml`, version `scenario/v1`)
+## 3. Scenario schema
 
-| Field | Type | Required? | Constraints / meaning |
-|---|---|---|---|
-| `schema_version` | string | Yes | Must equal `"scenario/v1"`; unknown versions are rejected (fail-closed) |
-| `scenario` | string | Yes | Snake-case id, e.g. `payment_gateway_timeout`; matches `scenario` in every trace event |
-| `task` | string | Yes | Natural-language goal given to the agent, e.g. `"Pay vendor $150 for invoice #9821"` |
-| `seed` | integer | Yes | Base RNG seed (default 42); recorded in `run_started` |
-| `tools` | list of tool specs | Yes | Each: `name`, `latency_ms` (virtual), `timeout_ms`, `mutating` (bool), `idempotency_key_arg` (string or null) |
-| `faults` | list of fault specs | Yes | Each: `at_step`, `kind` (`timeout_after_commit`, `timeout_before_commit`, `poisoned_doc`, `concurrent_update`), `params` |
-| `invariants` | list of invariant specs | Yes | Each: `id`, `check` (predicate expression), `description` |
-| `policy` | string | Yes | Path to the policy file this scenario runs under, e.g. `policies/default.yaml` |
-| `max_steps` | integer | No | Default 12; run aborts with `E_RUNAWAY` beyond it (see OQ-05-1) |
+Removed in 0.3.0. The core no longer reads a `scenario.yaml`. The host names fault boundaries in code (`ac.configure_faults`) or builds a `FaultSchedule` from its own fault list, and passes invariant ids to `check --invariant`. `FaultSchedule.from_scenario` and `validate_fault_entry` remain as helpers for hosts that keep their own scenario files. Both reject unknown fault kinds with `UnknownFaultError`.
 
-Full example (v0 prototype slice):
+### 3.1 Fault descriptors
 
-```yaml
-schema_version: "scenario/v1"
-scenario: payment_gateway_timeout
-task: "Pay vendor $150 for invoice #9821"
-seed: 42
-tools:
-  - name: charge_card
-    latency_ms: 300
-    timeout_ms: 1500
-    mutating: true
-    idempotency_key_arg: idempotency_key
-  - name: get_transaction_status
-    latency_ms: 120
-    timeout_ms: 1000
-    mutating: false
-    idempotency_key_arg: null
-  - name: read_doc
-    latency_ms: 80
-    timeout_ms: 1000
-    mutating: false
-    idempotency_key_arg: null
-faults:
-  - at_step: 3
-    kind: timeout_after_commit
-    params:
-      tool: charge_card
-      simulated_latency_ms: 2000
-invariants:
-  - id: exactly_once_mutation
-    check: "count(calls['charge_card']) == 1"
-    description: "The payment tool must commit exactly once."
-  - id: task_completion
-    check: "environment.invoice_status == 'PAID'"
-    description: "The legitimate task still completes after recovery."
-policy: "policies/default.yaml"
-max_steps: 12
+SDK form, keyed by boundary name:
+
+```python
+ac.configure_faults({"payments.charge": {"kind": "timeout_after_commit", "occurrence": 1}})
 ```
 
-## 4. Policy file schema (`policy/v1`) and patch format
+`FaultPolicy.should_fire(boundary, call_index)` fires when `int(spec.get("occurrence", 1)) == call_index`. `RunContext.maybe_fault` counts calls per boundary per run, so `occurrence: N` fires on exactly the Nth call.
 
-| Field | Type | Required? | Constraints / meaning |
+Catalog (`injector.py`, `FAULT_CATALOG`):
+
+| kind | Effect | Params (`required` marked) | Defaults |
 |---|---|---|---|
-| `schema_version` | string | Yes | `"policy/v1"` |
-| `rules` | list of rule objects | Yes | Each rule: `rule` (name), `tool` (or `*`), `action`, plus rule-specific params |
-| `rules[].rule` | string | Yes | One of `on_tool_timeout`, `on_mutating_retry`, `on_untrusted_content`, `on_stale_read` (last two reserved for P2 scenarios) |
-| `rules[].action` | string | Yes | One of `fail`, `retry_same`, `check_then_act`, `require_confirmation` |
-| `retry.max_attempts` | integer | For retry rules | 1..5; v0 default 2 |
-| `retry.require_idempotency_key` | bool | For retry rules | v0 fixed `true`; retries without a key are rejected by the runner |
-| `confirmation.message` | string | For confirmation rules | Prompt shown; v0 auto-denies in non-interactive runs |
+| `timeout_after_commit` | Write commits, then the tool reports TIMEOUT | `tool`, `op`, `occurrence`, `simulated_latency_ms` | `occurrence=1`, `simulated_latency_ms=2000` |
+| `timeout_before_commit` | TIMEOUT without a commit | same as above | same as above |
+| `concurrent_update` | Rival writer updates the record first | `tool`, `op`, `occurrence`, `key` (required), `updates` (required, object) | `occurrence=1` |
+| `poisoned_doc` | Inert marker. The retrieved fixture bytes carry the injection | `tool`, `doc_id`, `fixture_key` | none |
 
-Full example `policies/default.yaml` (v0 naive policy -- expected to FAIL the timeout scenario):
+`validate_fault_entry(kind, params)` returns `{"kind", "at_step": None, "params": <defaults + params>}`. It rejects non-string kinds, unknown kinds, non-object params, unknown param names and missing required params. Triggers: by `tool`/`op`/`occurrence` call count, or by `at_step` (1-based loop step). No fault has a default tool target.
+
+## 4. Policy schema (`policy/v1`) and patch (`policy_patch/v1`)
+
+Schemas live in `src/agentcrash/schemas/policy.json` and `policy-patch.json` (JSON Schema draft-07).
+
+### 4.1 `policy/v1` (YAML or JSON)
 
 ```yaml
-schema_version: "policy/v1"
+schema_version: policy/v1
 rules:
   - rule: on_tool_timeout
-    tool: "charge_card"
-    action: retry_same
-    retry:
-      max_attempts: 2
-      require_idempotency_key: false
+    tool: payments.charge
+    action: check_then_act
+    check: {tool: payments.status, by: reference}
+    retry: {max_attempts: 1, require_idempotency_key: true}
 ```
 
-Diagnoser output `policy_patch.json` (JSON Merge Patch, RFC 7396 style; the ONLY format `replay --policy` accepts):
+| Field | Type | Rule |
+|---|---|---|
+| `schema_version` | string | Required. Exactly `policy/v1`. |
+| `rules` | array | Required. |
+| `rules[].rule` | string | Required. One of `on_tool_timeout`, `on_mutating_retry`, `on_untrusted_content`, `on_stale_read`. |
+| `rules[].tool` | string | Required. |
+| `rules[].action` | string | Required. One of `fail`, `retry_same`, `check_then_act`, `require_confirmation`. |
+| `rules[].check` | object | Optional. Free-form. |
+| `rules[].retry.max_attempts` | integer | Optional. 0 to 3. |
+| `rules[].retry.require_idempotency_key` | boolean | Optional. |
+| `rules[].confirmation` | object | Optional. Free-form. |
+
+The schema does not set `additionalProperties: false`, so extra keys pass validation. `load_policy(path)` returns `(data, raw_text)` and raises `PolicyError` on unreadable, malformed or invalid input.
+
+### 4.2 `policy_patch/v1` (JSON)
 
 ```json
 {
   "schema_version": "policy_patch/v1",
-  "source_run_id": "a3f9c1d2e4b50607",
-  "rationale": "Timeout outcome is ambiguous; blind retry caused a duplicate charge. Force status check first and require idempotency keys on retry.",
-  "patch": {
-    "rules": [
-      {
-        "rule": "on_tool_timeout",
-        "tool": "charge_card",
-        "action": "check_then_act",
-        "check": {"tool": "get_transaction_status", "by": "idempotency_key"},
-        "retry": {"max_attempts": 2, "require_idempotency_key": true}
-      }
-    ]
-  }
+  "source_run_id": "run_ab12cd34ef56",
+  "rationale": "Blind retry duplicated a commit after an ambiguous timeout.",
+  "patch": {"rules": [{"rule": "on_tool_timeout", "tool": "payments.charge",
+                        "action": "check_then_act", "retry": {"max_attempts": 1}}]}
 }
 ```
 
-Patched `policies/fixed-timeout.yaml` (what replay actually runs):
-
-```yaml
-schema_version: "policy/v1"
-rules:
-  - rule: on_tool_timeout
-    tool: "charge_card"
-    action: check_then_act
-    check: {tool: get_transaction_status, by: idempotency_key}
-    retry: {max_attempts: 2, require_idempotency_key: true}
-```
-
-## 5. JSONL trace event schema (`trace/v1`)
-
-One JSON object per line, UTF-8, sorted keys, `\n` terminated. Every event carries the full envelope; scenario-specific detail lives in `detail`.
-
-| Field | Type | Required? | Constraints / meaning |
-|---|---|---|---|
-| `event_id` | string | Yes | `evt_<run_id>_<zero-padded seq>`, e.g. `evt_a3f9c1d2_0007`; strictly increasing |
-| `prev_hash` | string | Yes | SHA-256 of the previous line (`"GENESIS"` for the first); tamper-evidence chain |
-| `ts_virtual` | integer | Yes | Virtual-clock ms since run start; monotonic non-decreasing; ONLY time verifiers may read |
-| `run_id` | string | Yes | `sha256(scenario_file + policy_file + seed)[:16]`; reruns collide by design |
-| `scenario` | string | Yes | Must match the `scenario.yaml` id |
-| `step` | integer | Yes | Agent-loop step number, 1-based; injector/summary events use the step they belong to |
-| `tool` | string or null | Yes | Tool name for call/result events; null for run envelope and injector events |
-| `args` | object | Yes | Tool arguments (empty `{}` when n/a); MUST include `idempotency_key` for mutating retries under fixed policy |
-| `outcome` | string | Yes | One of `success`, `timeout`, `error`, `blocked`, `info` |
-| `latency` | integer | Yes | Virtual ms consumed by this event |
-| `injector_event` | object or null | Yes (null when n/a) | `{fault, at_step, params}` when the injector acted at this step |
-| `policy_decision` | object or null | Yes (null when n/a) | `{rule, action, detail}` recording which policy rule fired |
-| `detail` | object | No | Response payloads, error strings, ledger hashes; verifiers read `detail.ledger_hash` and tool payloads |
-
-Full JSON examples (abridged run, seed 42):
-
-```json
-{"args": {}, "detail": {"policy": "policies/default.yaml", "seed": 42, "task": "Pay vendor $150 for invoice #9821"}, "event_id": "evt_a3f9c1d2_0001", "injector_event": null, "latency": 0, "outcome": "info", "policy_decision": null, "prev_hash": "GENESIS", "run_id": "a3f9c1d2e4b50607", "scenario": "payment_gateway_timeout", "step": 0, "tool": null, "ts_virtual": 0}
-{"args": {"amount": 150.0, "idempotency_key": null, "invoice_id": 9821}, "detail": {"attempt": 1}, "event_id": "evt_a3f9c1d2_0003", "injector_event": {"at_step": 3, "fault": "timeout_after_commit", "params": {"simulated_latency_ms": 2000}}, "latency": 2000, "outcome": "timeout", "policy_decision": {"action": "retry_same", "detail": "blind retry, no idempotency key", "rule": "on_tool_timeout"}, "prev_hash": "9be27f...", "run_id": "a3f9c1d2e4b50607", "scenario": "payment_gateway_timeout", "step": 3, "tool": "charge_card", "ts_virtual": 2300}
-{"args": {"amount": 150.0, "idempotency_key": null, "invoice_id": 9821}, "detail": {"charge_id": "ch_002", "ledger_charges": 2}, "event_id": "evt_a3f9c1d2_0004", "injector_event": null, "latency": 300, "outcome": "success", "policy_decision": null, "prev_hash": "c41aa0...", "run_id": "a3f9c1d2e4b50607", "scenario": "payment_gateway_timeout", "step": 4, "tool": "charge_card", "ts_virtual": 2600}
-{"args": {}, "detail": {"charges": 2, "invoice_status": "PAID", "ledger_hash": "sha256:77f1..."}, "event_id": "evt_a3f9c1d2_0005", "injector_event": null, "latency": 0, "outcome": "info", "policy_decision": null, "prev_hash": "d208b3...", "run_id": "a3f9c1d2e4b50607", "scenario": "payment_gateway_timeout", "step": 4, "tool": null, "ts_virtual": 2600}
-```
-
-A FIXED-policy replay of the same seed shows the recovery shape: step 3 `timeout` is followed by `get_transaction_status` (result: `committed`, charge `ch_001` found), no second `charge_card` call, final `charges: 1`.
-
-## 6. Environment state model (invoice ledger example)
-
-The synthetic environment is an in-memory ledger snapshotted to `reports/<run_id>.state.json` at run end. Verifiers read the snapshot, never live objects.
-
-| Entity | Fields | Rules |
+| Field | Type | Rule |
 |---|---|---|
-| `invoice` | `id` (int), `vendor` (string), `amount` (number), `status` (`UNPAID`/`PAID`/`REFUNDED`) | Status flips to `PAID` only via a committed `charge_card` |
-| `charge` | `charge_id` (string), `invoice_id` (int), `amount` (number), `idempotency_key` (string or null) | Duplicate `(invoice_id, idempotency_key)` pairs are collapsed by the ledger; retries WITHOUT a key create duplicate rows (this is the bug v0 demonstrates) |
-| `doc` | `doc_id`, `body`, `untrusted` (bool) | Reserved for the P2 poisoned-doc scenario; untrusted bodies are wrapped in `<untrusted_content>` delimiters per prompt-injection defense research |
-| `record_version` | `record`, `version` (int), `last_writer` | Reserved for the P2 stale-read scenario; writers check versions, reject stale updates |
+| `schema_version` | string | Required. Exactly `policy_patch/v1`. |
+| `source_run_id` | string | Required. `fetch_live_patch` backfills it from its `source_run_id` argument when the model omits it. |
+| `rationale` | string | Required. |
+| `patch` | object | Required. RFC 7396 JSON Merge Patch applied onto the base policy. |
 
-Full example `reports/a3f9c1d2.state.json` (failing run -- two charges):
+Application (`apply_patch`): objects merge by key, arrays and scalars replace (so a patch that sets `rules` replaces the whole list), `null` deletes a key. Each rule then goes through `normalize_rule`, which maps shorthand keys: `max_retries` (int 0-3) to `retry.max_attempts`, `retry_with_idempotency_key` (bool) to `retry.require_idempotency_key`, and actions `check_transaction_status` to `check_then_act`, `confirm_with_user` to `require_confirmation`, `abort` to `fail`. The merged result is validated against `policy/v1`. Any failure raises `PolicyRejectedError`. `apply_patch` returns `(new_policy, canonical_yaml_text)`. `diff_policies(old, new)` renders `+`, `-`, `~` and `=` lines per `rule/tool` key.
+
+## 5. Trace schemas
+
+Two JSON shapes exist. `check` loads any JSONL file as a list of objects, and each invariant reads the fields it needs.
+
+### 5.1 SDK event v1 (`events.py`, `make_event`)
+
+| Field | Type | Notes |
+|---|---|---|
+| `schema_version` | int | `1` (`SCHEMA_VERSION`). |
+| `event_id` | string | `evt_<run_id>_<seq:04d>`. Idempotency key on the server. |
+| `run_id` | string | `run_<12 hex>` from `uuid4`. `disabled_<8 hex>` when the SDK is disabled. |
+| `project` | string | `WorkflowConfig.project`. |
+| `workflow` | string | Name passed to `ac.run(name)` or `@ac.workflow(name)`. |
+| `step` | string or null | Step name. For `fault` events, the boundary name. |
+| `parent_step` | string or null | Reserved. The SDK does not set it today. |
+| `kind` | string | SDK emits `run_start`, `run_end`, `step_start`, `step_end`, `tool`, `fault`, `result`. |
+| `status` | string | `ok` (default) or `error`. |
+| `seq` | int | Positive, gapless, starts at 1 for each run. |
+| `tool` | string or null | Tool name for `tool` events. |
+| `inputs` | object | Redacted. `{}` when empty. |
+| `outputs` | object | Redacted. `{}` when empty. `result` events hold `{"value": str(out)[:2000]}`. |
+| `error` | string or null | `"<ExceptionName>: <message>"` on errors. Not redacted. |
+| `fault` | object or null | The fault descriptor that fired. |
+| `prev_hash` | string | Added by the SDK after `make_event`. `sha256("<previous prev_hash>:<canonical JSON of the event without prev_hash>")` as hex. First link uses `GENESIS`. `make_event` itself does not emit this key. |
+
+Required keys checked by `validate_event`: `schema_version`, `event_id`, `run_id`, `project`, `workflow`, `step`, `kind`, `status`, `seq`. Also `schema_version == 1` and `seq` an int `>= 1`. `step` must be present but may be null.
+
+### 5.2 `TraceWriter` envelope (`tracer.py`)
+
+One canonical JSON line per event (sorted keys, separators `,` and `:`), written with `TraceWriter(run_id, scenario, path)`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `event_id` | string | `evt_<run_id>_<seq:04d>`, gapless from 0001. |
+| `prev_hash` | string | `GENESIS` first, then `sha256` hex of the previous full line. |
+| `ts_virtual` | int | Virtual ms. Defaults to previous `ts_virtual` + `latency`. Must not decrease. |
+| `run_id` | string | Passed to the constructor. |
+| `scenario` | string | Free-form label passed to the constructor. |
+| `step` | int | `>= 0`. |
+| `tool` | string or null | Redacted. |
+| `args` | object | Redacted. |
+| `outcome` | string | One of `success`, `timeout`, `error`, `blocked`, `info` (default `info`). |
+| `latency` | int | `>= 0`, virtual ms. |
+| `injector_event` | object or null | Redacted. For `concurrent_update`, `NoLostUpdate` reads `fault`, `record`, `updates`. |
+| `policy_decision` | object or null | Redacted. |
+| `detail` | object | Redacted. `FreshWriteOnly` reads `detail.phase == "tool_result"` and `detail.data.version_conflict` / `detail.data.expected_version`. |
+
+Size cap: when a line exceeds 65,536 bytes (`DETAIL_MAX_BYTES`), `detail` is replaced by `{"_truncated": true, "original_bytes": N, "preview": "<first 65536 chars>...[TRUNCATED detail]"}`. Only caller-supplied fields are redacted. Harness fields (ids, hashes, counters) never are.
+
+`verify_chain(path)` returns `{"ok": true, "first_bad": null, "reason": null}` or `{"ok": false, "first_bad": <event_id>, "reason": ...}` with reasons `invalid JSON`, `gapless event_id broken`, `prev_hash mismatch`, `ts_virtual decreased`.
+`compute_run_id(scenario_text, policy_text, seed)` is `sha256(scenario_text + policy_text + str(seed))[:16]`.
+
+### 5.3 Redaction (both shapes)
+
+| Rule | Replacement |
+|---|---|
+| Mapping key matches `*_token`, `*secret*` or `*key*` (case-insensitive), except `idempotency_key` | Value becomes `[REDACTED]` |
+| Email shape inside a string | `redacted@example.com` |
+| Digit run of 13 to 19 digits (spaces or dashes allowed) | `4111111111111111` |
+
+Redaction recurses through dicts and lists. The SDK redacts `inputs` and `outputs`. `TraceWriter` redacts `tool`, `args`, `injector_event`, `policy_decision` and `detail`.
+
+## 6. State snapshot (`env_state/v1`)
+
+Produced by `Ledger.snapshot(run_id)` (`ledger.py`). The ledger is a per-run, in-memory versioned key-value store for tests.
 
 ```json
 {
   "schema_version": "env_state/v1",
-  "run_id": "a3f9c1d2e4b50607",
-  "invoices": [{"id": 9821, "vendor": "Acme Paper Co", "amount": 150.0, "status": "PAID"}],
-  "charges": [
-    {"charge_id": "ch_001", "invoice_id": 9821, "amount": 150.0, "idempotency_key": null},
-    {"charge_id": "ch_002", "invoice_id": 9821, "amount": 150.0, "idempotency_key": null}
-  ],
-  "docs": [],
-  "record_versions": [],
-  "ledger_hash": "sha256:77f1c4a9..."
+  "run_id": "run_ab12cd34ef56",
+  "docs": [{"doc_id": "d1", "fixture": "f1", "label": "retrieved"}],
+  "record_versions": [{"record": "acct:1", "value": {"balance": 10}, "version": 2}],
+  "ledger_hash": "sha256:<64 hex>"
 }
 ```
 
-## 7. Retention, versioning, and compatibility
-
-| Rule | Detail |
+| Field | Notes |
 |---|---|
-| Schema versions | `scenario/v1`, `policy/v1`, `policy_patch/v1`, `trace/v1`, `env_state/v1`; bumped as `v2` on any breaking field change, with a migration note in `15-roadmap-and-changelog.md` |
-| Strict reading | Unknown `schema_version` => reject with `E_SCHEMA` (fail-closed); unknown EXTRA fields => warn but accept (forward-tolerant) |
-| Golden traces | Curated passing AND failing traces live in `traces/golden/` permanently; CI replays them on every policy change |
-| Local traces | `traces/*.jsonl` + `reports/*` kept 90 days locally, then deletable; nothing leaves the laptop in P1 |
-| No PII | Synthetic vendors/amounts only; `check --scan-pii` (regex for emails, cards) runs in CI as a guardrail |
-| Backup | Git is the backup for scenarios/policies/golden traces; ephemeral traces are reproducible via seed and need none |
+| `docs` | Spans recorded with `record_doc(doc_id, fixture, label)`. |
+| `record_versions` | Sorted by `record`. Seeded records start at version 1. Each write or concurrent apply adds 1. |
+| `ledger_hash` | `"sha256:" + sha256(canonical JSON of all other fields)`. `Ledger.ledger_hash(snapshot)` recomputes it. |
 
-## 8. Validation rules (enforced by `check --strict-schema`)
+Store semantics: `kv_write(key, value, expected_version)` always commits and bumps the version. It returns `{"version", "conflict"}` with `conflict` true when `expected_version` differs from the current version (a store with no optimistic concurrency, by design). `kv_apply_concurrent(key, updates)` merges `updates` and returns `{"version_before", "version_after"}`. `kv_read` returns `{"value", "version"}` or `None`.
 
-1. Every line parses as JSON; envelope fields all present with correct types.
-2. `event_id` sequence is gapless; `ts_virtual` never decreases; `prev_hash` chain verifies.
-3. `scenario` matches the invoked `scenario.yaml`; `run_id` recomputes correctly.
-4. Mutating tool retries carry non-null `idempotency_key` when policy requires it.
-5. Final `ledger_hash` in trace equals the hash of `reports/<run_id>.state.json`.
+`check --state` only requires the file to be a JSON object. `NoLostUpdate` reads `record_versions[].record` and `.value`. Missing keys read as empty.
 
-## 9. Open questions (genuinely undecided -- owner assigned)
+## 7. Verdict report JSON
 
-| ID | Question | Owner | Resolves by gate |
+Written by `check` to `--report-out` (default `reports/<run_id>.verdict.json`) with sorted keys, 2-space indent and a trailing newline. With `--format json` the same document is also printed to stdout.
+
+```json
+{
+  "api_version": "v1",
+  "results": [
+    {"evidence": "duplicate effect(s): payments.charge at steps charge and charge",
+     "id": "duplicate_mutating_effect", "passed": false}
+  ],
+  "run_id": "run_ab12cd34ef56",
+  "verdict": "FAIL"
+}
+```
+
+| Field | Notes |
+|---|---|
+| `api_version` | `"v1"`. |
+| `results[]` | One `Verdict.to_dict()` per requested invariant, in request order: `id`, `passed` (bool), `evidence` (string). |
+| `run_id` | `run_id` of the first trace event, or `core-check` when absent. |
+| `verdict` | `PASS` only when every result passed, else `FAIL`. |
+
+Error document (with `--format json`, printed instead of the report): `{"api_version": "v1", "code": "<E_...>", "exit": <int>, "hint": "<text>"}`. Codes: `E_CONFIG` (exit 2), `E_TRACE_CORRUPT` (exit 3), `E_PII_LEAK` (exit 1). In text mode the error goes to stderr as `agentcrash check: <code>: <hint>`.
+
+`evaluate_trace(trace, invariants, state=None, run_id="")` returns a different, library-level report: `run_id`, `invariants`, `passed`, `failed`, `verdict`, `results`. `compare_reports(baseline, candidate)` returns `baseline`, `candidate`, `regressions` (ids that went pass to fail), `fixes` (fail to pass), `regression` (bool).
+
+## 8. Control-plane store (`server.py`)
+
+In-memory, process-local, cleared by `reset_store()`.
+
+| Collection | Key | Value |
+|---|---|---|
+| projects | `project` | `{project, environment, runs}` |
+| events | `event_id` | the event dict as ingested |
+| runs | `run_id` | `{run_id, project, workflow, events: [event_id...], created_at}` (`created_at` is server wall-clock seconds) |
+| evaluations | `run_id` | `{invariant id: {id, passed, evidence}}` |
+
+Ingestion is idempotent on `event_id`. Run detail returns events sorted by `seq`, plus `faults` (non-null `fault` fields) and `evaluation`.
+
+## 9. Retention, versioning and compatibility
+
+- **Retention:** `prune_runs(project, keep_last_n=None, older_than_days=None)` and `POST /v1/admin/prune`. At least one criterion is required. `keep_last_n` must be a non-negative int. `older_than_days` must be a non-negative number. Runs at or before the cutoff are dropped even if `keep_last_n` would keep them. Dropped runs lose their events and evaluations. Local trace and report files are never pruned by the core.
+- **Versioning:** event schema is `1`. The server rejects other versions as `invalid`. New fields must be additive within a version. A breaking change bumps the version tag.
+- **Redaction exemptions:** the `*key*` pattern also hides keys such as `api_key`. `idempotency_key` is exempt so duplicate-effect evidence stays visible.
+
+## 10. Validation rules
+
+| Where | Rule | Failure |
+|---|---|---|
+| `validate_event` | Required keys present, `schema_version == 1`, `seq` int >= 1 | Problem strings. The server counts the event as `invalid`. |
+| `ingest_events` | Event is an object with a non-empty `event_id` | Counted `invalid`. |
+| `load_trace_events` | Readable, each non-blank line a JSON object, at least one event | `TraceCorruptError`, exit 3. |
+| `load_state_snapshot` | Readable JSON object | `TraceCorruptError`, exit 3. |
+| `run_verifiers` | Each invariant id is a string or `{"id": ...}`. Known id. Verifier returns a `Verdict` whose `invariant_id` equals the requested id | `UnknownVerifierError` (exit 2) or `VerifierError` (exit 3). |
+| Built-in verifiers | Trace is a list of objects. `NoLostUpdate` also needs `state` to be an object | `VerifierError`, exit 3. |
+| `TraceWriter.write` | `outcome` in the allowed set, `step >= 0`, `latency >= 0`, `ts_virtual` non-decreasing | `ValueError`. |
+| `validate_fault_entry` | Known kind, known params, required params present | `UnknownFaultError`. |
+| `validate_policy_data` | Mapping, `schema_version == "policy/v1"`, JSON Schema | `PolicyError`. |
+| `validate_patch_data` | Object, `schema_version == "policy_patch/v1"`, JSON Schema, `patch` is an object | `PolicyRejectedError`. |
+| `submit_evaluation` | `results` is a list, each row has an `id` | `TypeError` or `ValueError`, HTTP 400. |
+| `check --scan-pii` | No raw email or card-like digit run in the trace or state file. The two redaction placeholders are exempt | `E_PII_LEAK`, exit 1. |
+
+## 11. Open questions
+
+| # | Question | Owner | Resolves by |
 |---|---|---|---|
-| OQ-06-1 | Cap trace payload size per event (proposal: 64 KB, truncate `detail` with marker) | Startup CTO | P1 scope freeze |
-| OQ-06-2 | Canonical predicate language for `invariants[].check` (proposal: restricted Python via `asteval` vs Rego) | ML lead (to hire) | P2 planning |
-| OQ-06-3 | Whether golden traces include full LLM prompts (bigger files, better diagnoser context) | Startup CTO | P1 scope freeze |
+| 1 | One trace shape for SDK events and `TraceWriter` lines | CTO | R5 |
+| 2 | Pass `call_index` from the SDK so `occurrence > 1` fires in `maybe_fault` | CTO | R2 |
+| 4 | Persist the control-plane store | CTO | After R4 |

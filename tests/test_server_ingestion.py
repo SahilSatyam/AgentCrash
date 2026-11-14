@@ -47,9 +47,9 @@ def _code(port, path, payload=None, credential=None):
 
 def test_idempotent_ingestion_and_run_detail():
     reset_store()
-    register_project("odrl-policy-engine")
-    ac = AgentCrash(WorkflowConfig(project="odrl-policy-engine"))
-    with ac.run(name="nl-to-odrl") as run, run.step("parse-policy"):
+    register_project("checkout-agent")
+    ac = AgentCrash(WorkflowConfig(project="checkout-agent"))
+    with ac.run(name="checkout") as run, run.step("plan"):
         pass
     batch = list(ac.traces[run.run_id])
     first = ingest_events(batch)
@@ -57,9 +57,9 @@ def test_idempotent_ingestion_and_run_detail():
     second = ingest_events(batch)  # replay -> deduped
     assert second["accepted"] == 0 and second["duplicate"] == len(batch)
     detail = run_detail(run.run_id)
-    assert detail["project"] == "odrl-policy-engine"
+    assert detail["project"] == "checkout-agent"
     assert [e["seq"] for e in detail["events"]] == sorted(e["seq"] for e in detail["events"])
-    assert reliability_summary("odrl-policy-engine")["runs"] == 1
+    assert reliability_summary("checkout-agent")["runs"] == 1
 
 
 def test_http_roundtrip_multi_project():
@@ -150,3 +150,31 @@ def test_auth_allowlist_gates_api_but_not_lab(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_stdlib_and_fastapi_expose_the_same_read_routes():
+    import pytest
+
+    from agentcrash import submit_evaluation
+    from agentcrash.server import create_fastapi_app
+
+    reset_store()
+    server, port = serve(port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        ac = AgentCrash(WorkflowConfig(project="p"))
+        with ac.run(name="w") as run:
+            pass
+        ingest_events(list(ac.traces[run.run_id]))
+        assert _code(port, f"/v1/runs/{run.run_id}/evaluation") == 404
+        submit_evaluation(run.run_id, [{"id": "x", "passed": True, "evidence": "ok"}])
+        assert _get(port, f"/v1/runs/{run.run_id}/evaluation")["verdict"] == "PASS"
+        assert _get(port, "/v1/reliability/p")["runs"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    pytest.importorskip("fastapi")
+    paths = {route.path for route in create_fastapi_app().routes}
+    assert {"/v1/runs/{run_id}/evaluation", "/v1/reliability/{project}"} <= paths

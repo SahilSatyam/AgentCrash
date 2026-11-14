@@ -3,9 +3,8 @@
 ``check`` verifies registry invariants against an SDK-schema JSONL trace;
 ``serve`` runs the loopback control plane (Lab + ``/v1`` API).
 
-Host-owned commands (``run`` / ``diagnose`` / ``replay`` / ``seed`` /
-``optimize-prompts``) live in the host CLI (e.g. ``odrl_agent.cli``) and
-reuse the shared helpers below (exit codes, :class:`ConfigError`,
+Host-owned commands (``run`` / ``diagnose`` / ``replay``) live in the
+host's own CLI and reuse the shared helpers below (exit codes, :class:`ConfigError`,
 ``resolve_scenario`` / ``resolve_policy`` / ``load_yaml`` /
 ``validate_run_inputs``). Core never imports host or domain stacks.
 """
@@ -23,6 +22,7 @@ import yaml
 from agentcrash import __version__
 from agentcrash.injector import FaultSchedule, UnknownFaultError
 from agentcrash.verifiers import (
+    FreshWriteOnly,
     TraceCorruptError,
     UnknownVerifierError,
     VerifierError,
@@ -111,6 +111,41 @@ def validate_run_inputs(scenario: dict[str, Any], policy: dict[str, Any]) -> tup
     return seed, max_steps
 
 
+def register_builtin_invariants(requested: list[str]) -> None:
+    """Register the core invariants so ``check`` works without plugins.
+
+    ``required_step:<name>`` and ``fresh_write_only:<tool>[,<tool>...]`` ids
+    are parametric and registered on demand.
+    Plugins imported afterwards may override any built-in id.
+    """
+    from agentcrash.invariants import DuplicateMutatingEffect, RequiredStep
+    from agentcrash.verifiers import NoLostUpdate, register_verifier
+
+    for verifier in (DuplicateMutatingEffect(), FreshWriteOnly(), NoLostUpdate()):
+        register_verifier(verifier)
+    for invariant_id in requested:
+        name, _, arg = invariant_id.partition(":")
+        if not arg:
+            continue
+        if name == "required_step":
+            register_verifier(RequiredStep(arg))
+        elif name == "fresh_write_only":
+            tools = [tool.strip() for tool in arg.split(",") if tool.strip()]
+            if tools:
+                register_verifier(FreshWriteOnly(tools, id=invariant_id))
+
+
+def verify_trace_chain(trace_path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verify the hash chain of an SDK trace or a ``TraceWriter`` file."""
+    if all("seq" in event and "kind" in event for event in events):
+        from agentcrash.sdk import verify_sdk_chain
+
+        return verify_sdk_chain(events)
+    from agentcrash.tracer import verify_chain
+
+    return verify_chain(str(trace_path))
+
+
 def cmd_check(argv: list[str]) -> int:
     """Execute ``agentcrash check`` (exit 0 PASS, 1 VERDICT_FAIL, 3 corrupt).
 
@@ -126,11 +161,17 @@ def cmd_check(argv: list[str]) -> int:
         action="append",
         default=[],
         help="dotted module to import before judging (registers host "
-        "invariants, e.g. odrl_agent.verifiers); repeatable",
+        "invariants, e.g. my_agent.invariants); repeatable",
     )
     parser.add_argument("--state", default=None)
     parser.add_argument("--report-out", default=None)
     parser.add_argument("--format", choices=("text", "json"), default="text")
+    parser.add_argument(
+        "--verify-chain",
+        action="store_true",
+        help="verify the trace's hash chain (SDK run or TraceWriter file) "
+        "before judging; a broken chain exits 3",
+    )
     parser.add_argument(
         "--scan-pii",
         action="store_true",
@@ -161,6 +202,7 @@ def cmd_check(argv: list[str]) -> int:
             "no invariants: pass at least one --invariant <id>",
             EXIT_USAGE,
         )
+    register_builtin_invariants(args.invariant)
     for plugin in args.plugin:
         try:
             __import__(plugin)
@@ -174,6 +216,17 @@ def cmd_check(argv: list[str]) -> int:
     except TraceCorruptError as exc:
         emit(f"trace {trace_path} is corrupt: {exc}")
         return fail("E_TRACE_CORRUPT", str(exc), EXIT_CORRUPT)
+
+    if args.verify_chain:
+        chain = verify_trace_chain(trace_path, events)
+        if not chain["ok"]:
+            emit(f"trace {trace_path} chain broken at {chain['first_bad']}: {chain['reason']}")
+            return fail(
+                "E_TRACE_CORRUPT",
+                f"chain broken at {chain['first_bad']}: {chain['reason']}",
+                EXIT_CORRUPT,
+            )
+        emit(f"chain: ok ({trace_path})")
 
     state: dict[str, Any] = {}
     state_ref = args.state

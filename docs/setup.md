@@ -1,151 +1,137 @@
 # AgentCrash — Setup and Startup Guide
 
-Get from zero to a first failing-then-passing chaos run in about 15 minutes.
-The agent is live (real Meta model calls end to end); verification,
-fixtures, and the test suite stay offline and deterministic.
+From zero to a failing-then-passing chaos run in about 10 minutes.
+Everything here runs offline; no model key is needed.
 
 ## 1. Prerequisites
 
 | Need | Version | Check |
 |---|---|---|
-| WSL2, Ubuntu-24.04 distro | any recent | `wsl -l -v` (Windows side) |
-| Python | 3.11+ (3.12 verified) | `python3 --version` (inside WSL) |
-| uv | any recent (0.13 verified) | `uv --version` (inside WSL) |
+| Python | 3.11+ | `python --version` |
+| uv (recommended) | any recent | `uv --version` |
 | git | any recent | `git --version` |
 
-All commands below run **inside WSL**. Tooling lives in WSL by design;
-do not install a second Python/Node toolchain on Windows.
+Works on Windows (PowerShell), macOS, and Linux.
 
-## 2. Setup
+## 2. Install
+
+As a user:
 
 ```bash
-# 1. Enter WSL and clone the repo
-wsl -d Ubuntu-24.04
+pip install agentcrash-core
+```
+
+As a contributor:
+
+```bash
 git clone https://github.com/SahilSatyam/AgentCrash.git
 cd AgentCrash
-git checkout feat/live-llama-run   # current implementation branch (until merged)
-
-# 2. Create the environment (uv-managed; no pip binary needed)
 uv venv
-source .venv/bin/activate
 uv pip install -e ".[dev]"
-
-# 3. Sanity-check the gates (must all pass; no key needed)
-ruff check .
-black --check .
-pytest -q
+pytest -q && ruff check . && black --check .
 ```
 
-Expected: `All checks passed!`, `32 files would be left unchanged`,
-`136 passed, 1 skipped` (the skip is the key-gated live test).
-If `uv` is missing, install it user-scoped inside WSL
-(`curl -LsSf astral.sh/uv/install.sh | sh`) — never on Windows.
+On Windows, Smart App Control or WDAC may block unsigned console-script
+launchers such as `.venv\Scripts\agentcrash.exe` (Code Integrity event 3077).
+This guide uses `python -m agentcrash`, which is equivalent and always works.
+Do not turn Smart App Control off for this: Windows cannot turn it back on
+without a reset.
 
-Live runs need a Meta model key from the environment only — never flags,
-files, or traces (the tracer redacts secret-shaped values at write time):
+## 3. The 5-minute loop
+
+The scenario: an agent charges an order. The first `payments.charge`
+call commits, then reports a timeout (`timeout_after_commit`). A naive
+agent retries blindly and charges twice.
+
+### Step 1 — Instrument and break it
+
+```python
+# checkout.py
+import json
+import sys
+
+from agentcrash import AgentCrash, WorkflowConfig
+
+ac = AgentCrash(WorkflowConfig(project="checkout-agent", fault_injection=True, seed=42))
+ac.configure_faults({"payments.charge": {"kind": "timeout_after_commit", "occurrence": 1}})
+ledger = []
+
+def charge(order_id, key=None):
+    if key and any(row["key"] == key for row in ledger):
+        return {"charged": order_id, "deduped": True}
+    ledger.append({"order": order_id, "key": key})
+    return {"charged": order_id}
+
+fixed = "--fixed" in sys.argv
+with ac.run(name="checkout") as run, run.step("charge") as step:
+    key = "o-1-attempt" if fixed else None
+    step.record_tool("payments.charge", inputs={"order": "o-1"}, outputs=charge("o-1", key))
+    if run.maybe_fault("payments.charge"):  # agent saw TIMEOUT
+        if fixed:
+            step.record_tool("payments.status", inputs={"order": "o-1"},
+                             outputs={"charged": len(ledger)})
+        else:
+            step.record_tool("payments.charge", inputs={"order": "o-1"}, outputs=charge("o-1"))
+
+with open("run.jsonl", "w", encoding="utf-8") as fh:
+    fh.write("\n".join(json.dumps(e) for e in ac.trace(run.run_id)))
+print("charges:", len(ledger))
+```
+
+### Step 2 — Judge the naive run
 
 ```bash
-export LLAMA_API_KEY=paste-key-here
-export LLAMA_BASE_URL=https://api.meta.ai/v1
+python checkout.py
+python -m agentcrash check --trace run.jsonl \
+  --invariant duplicate_mutating_effect --invariant required_step:charge
+# [FAIL] Invariant duplicate_mutating_effect violated! (duplicate effect(s): payments.charge ...)
+# [PASS] Invariant required_step:charge satisfied
+# exit code 1
 ```
 
-Without these, `run` and the live `diagnose` path fail closed
-(`E_MODEL_API`, exit 5 / fixture fallback); `check`, fixtures, and the
-suite stay offline.
-
-## 3. Startup: the 5-minute demo loop
-
-Scenario `odrl_convert_timeout`: convert an access request to ODRL 2.2
-JSON-LD and save it once, while a `timeout_after_commit` fault fires on
-the first `save_odrl` write (commits server-side, reports TIMEOUT).
-Naive blind retry double-saves; the fixed policy reconciles first.
+### Step 3 — Fix the recovery logic and re-judge
 
 ```bash
-# Step 1 — Run, naive policy (live agent; reproducible shape via --seed 42)
-python -m agentcrash run --scenario odrl_convert_timeout --seed 42 \
-    --trace-out /tmp/naive.jsonl --state-out /tmp/naive.state.json
-# status=completed ... saves=2   (double save reproduced)
-
-# Step 2 — Check (deterministic verifiers; exit 1 = invariant violated)
-python -m agentcrash check --trace /tmp/naive.jsonl --state /tmp/naive.state.json
-# [FAIL] ... exactly_once_save ... save steps [4, 5]
-# [FAIL] ... odrl_valid ... missing required 'target'
-# [PASS] ... no_attacker_grant ...
-
-# Step 3 — Run, fixed policy (strict convert + reconcile-first)
-python -m agentcrash run --scenario odrl_convert_timeout \
-    --policy policies/fixed-odrl-timeout.yaml --seed 42 \
-    --trace-out /tmp/fixed.jsonl --state-out /tmp/fixed.state.json
-python -m agentcrash check --trace /tmp/fixed.jsonl --state /tmp/fixed.state.json \
-    --policy policies/fixed-odrl-timeout.yaml
-# verdict=PASS (exactly 1 save, valid ODRL, rival-safe)
-
-# Step 4 — Diagnose the naive trace (live model proposes the patch)
-python -m agentcrash diagnose --trace /tmp/naive.jsonl --state /tmp/naive.state.json \
-    --output /tmp/patch.json
-# proposed: on_tool_timeout/save_odrl -> check_then_act ...
-
-# Step 5 — Replay under the patch (verifies the fix)
-python -m agentcrash replay --trace /tmp/naive.jsonl --state /tmp/naive.state.json \
-    --patch /tmp/patch.json --no-regression
-# fix: NOT_FIXED means the patch was partial — rerun with
-# --policy policies/fixed-odrl-timeout.yaml for fix: VERIFIED
+python checkout.py --fixed
+python -m agentcrash check --trace run.jsonl \
+  --invariant duplicate_mutating_effect --invariant required_step:charge
+# verdict=PASS, exit code 0
 ```
 
-`agentcrash` (console script) and `python -m agentcrash` are equivalent.
-`--help` on any command lists every flag; `--format json` gives
-machine-readable verdicts (prose goes to stderr). Each run costs a few
-chat completions; `max_steps` (12) bounds the calls per run.
+The fix reads status before acting again. Sending an idempotency key on
+the retry works too.
 
-## 4. More scenarios
-
-| Scenario | Fault | Key invariant |
-|---|---|---|
-| `odrl_convert` | sloppy convert, no validation gate | `odrl_valid` |
-| `odrl_convert_poisoned` | injected attacker grant in the NL | `no_attacker_grant` |
-| `odrl_convert_concurrent` | rival writer before the first read | `fresh_write_only`, `no_lost_update` |
-| `odrl_convert_timeout` | ambiguous save timeout, first write | `exactly_once_save` |
-
-Same commands work for each; `check` needs `--state` only when the
-default `reports/<run_id>.state.json` is absent, and `--policy` when the
-trace ran under a non-default policy. NL bytes print inside
-`<untrusted_content>` delimiters — test content, never instructions.
-
-## 5. Useful extras
+## 4. Useful extras
 
 ```bash
-# Validate inputs without running anything
-python -m agentcrash run --scenario odrl_convert --dry-run
+# JSON verdict on stdout (prose goes to stderr)
+python -m agentcrash check --trace run.jsonl --invariant duplicate_mutating_effect --format json
 
-# Strict schema + hash-chain verification
-python -m agentcrash check --trace <f> --state <s> --strict-schema --verify-chain
+# Your own invariants from a module (see README "Your own invariants")
+python -m agentcrash check --trace run.jsonl --plugin my_agent.invariants --invariant my_check
 
-# PII/secret guardrail over a trace + state pair (non-zero exit on hits)
-python -m agentcrash check --trace <f> --state <s> --scan-pii
+# Verify the run's hash chain first (a break exits 3)
+python -m agentcrash check --trace run.jsonl --invariant required_step:charge --verify-chain
 
-# Corpus metrics (precision/recall, replay-fix worksheets; needs the key)
-python scripts/metrics.py
+# PII/secret guardrail over a trace (non-zero exit on hits)
+python -m agentcrash check --trace run.jsonl --invariant required_step:charge --scan-pii
+
+# Control plane: Lab UI + /v1 API on loopback
+python -m agentcrash serve --port 8901
 ```
 
-Traces land in `traces/` and reports in `reports/` (both gitignored —
-only curated fixtures under `tests/fixtures/traces/` are committed).
-
-## 6. Troubleshooting
+## 5. Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `run` fails with `E_MODEL_API` | Export `LLAMA_API_KEY` + `LLAMA_BASE_URL`; without a key only `check` and the suite work |
-| `check` says state file not found | Pass `--state` pointing at the run's state file |
-| `check --strict-schema` says run_id does not recompute | Pass `--policy` with the policy the trace ran under |
-| `diagnose` refuses with "No invariant violations" | The trace passes — nothing to diagnose; check a failing trace |
-| `diagnose` uses the fixture patch, not the model | `LLAMA_BASE_URL` unset or the model unreachable — transport failures fall back deliberately |
-| Live run 400s or returns unusable content | Model-side protocol drift; the adapter fails closed — see ADR-008 for the known-good shape |
-| Gates fail after an edit | `ruff check .`, `black .` (write mode), `pytest -q` |
+| `unknown invariant '...'` | Built-ins are `duplicate_mutating_effect`, `fresh_write_only[:<tool>,...]`, `no_lost_update`, `required_step:<name>`; anything else needs `--plugin` |
+| Fault never fires | Pass `fault_injection=True` and make the boundary name in `configure_faults` match `maybe_fault` |
+| SDK seems to do nothing | `AGENTCRASH_DISABLED=1` is set |
+| `401 unauthorized` from `/v1/*` | `AGENTCRASH_API_TOKENS` is set; send `api_key` in `WorkflowConfig` |
 
-## 7. Where next
+## 6. Where next
 
-- [System overview](overview.md) — architecture and prototype slice.
-- [ADLC lifecycle docs](adlc/) — requirements, design, testing, runbook; start with the [map](adlc/README.md).
-- [Implementation plan](plans/2026-10-29-agentcrash-implementation.md) — phase checkboxes and evidence.
-- [Runbook](adlc/14-runbook.md) — demo-day rehearsal, troubleshooting, rollback.
-- [Contributing](adlc/13-contributing-and-workflow.md) — branches, Conventional Commits, definition of done.
+- [Overview](overview.md) — problem and architecture.
+- [Architecture](architecture-decoupling.md) — core vs host boundary.
+- [Roadmap](plans/2026-11-14-sota-roadmap.md) — adapters, fault catalog v2, metrics.
+- [Examples](../examples/README.md) — reference integrations.

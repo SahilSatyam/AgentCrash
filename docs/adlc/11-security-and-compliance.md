@@ -1,160 +1,177 @@
-# 11 — Security and compliance notes
+# 11 - Security and compliance notes
 
-**Status:** Draft · **Owner:** Tech lead · **Last reviewed:** 2026-10-28
+**Status:** Revised for 0.3.0 · **Owner:** Tech lead · **Last reviewed:** 2026-11-14
 
-> Project-specific security requirements for AgentCrash. This is a working
-> startup note, not a compliance certification. Startup lens: protect keys,
-> keep the blast radius synthetic, and write down just enough to earn trust.
+> Project-specific security requirements for AgentCrash. A working note, not a
+> compliance certification. Protect keys, keep the blast radius to the host's
+> own test environment, and write down just enough to earn trust.
 
 ## 1. Assets and trust boundaries
 
 | Asset | Why it matters | Trust boundary |
 |---|---|---|
-| Llama API keys of builders | Billed identity; leak spends money | Env of the operator machine only, never repo or trace |
-| Traces in traces dir | May embed prompt text, args, PII-shaped values | Local gitignored dir plus curated goldens; redaction before persistence |
-| Policy files | Control agent recovery behavior | Reviewed diffs only; diagnoser output never auto-applied |
-| Poisoned doc fixtures | Adversarial strings that attack agents | Labeled test data; handled as untrusted content everywhere |
-| Golden traces | Define pass and fail truth | Updated deliberately with reviewer plus offline proof |
-| Source and scenarios | Startup IP | Standard repo access control |
+| Model API key (only if `fetch_live_patch` is used) | Billed identity; a leak spends money | Process environment (`AGENTCRASH_LLM_API_KEY`) only; never repo, flag, or trace |
+| Control-plane bearer tokens | Gate `/v1/*` | `AGENTCRASH_API_TOKENS` env var on the server; `api_key` in the host's `WorkflowConfig` |
+| Traces and reports | May embed tool inputs, outputs, PII-shaped values | Redacted at write time; local files are gitignored (`reports/`, `traces/*`) |
+| Policy files and patches | Control the host's recovery behavior | Schema-gated (`policy/v1`, `policy_patch/v1`); a model-proposed patch is never auto-applied |
+| Control-plane store | Holds ingested events and evaluations | Loopback by default; in-process data, pruned with `/v1/admin/prune` |
+| Source | Project IP | Standard repo access control |
 
-Roles: contributor (reads and writes code and docs), reviewer (approves
-policy-schema and golden changes), operator (holds the API key and runs live
-scenarios). No end-user accounts and no admin console exist in v0.
+Roles: contributor (code and docs), reviewer (approves schema, redaction and
+guard-test changes), operator (runs `serve`, holds tokens and any model key).
+There are no end-user accounts and no admin console. The only privileged
+operations are `/v1/admin/prune` and the token allowlist.
 
 ## 2. Threat model
 
-| Threat | Impact | Mitigation and detection | Owner and status |
+| Threat | Impact | Mitigation and detection | Status |
 |---|---|---|---|
-| Poisoned doc drives agent action | Unauthorized side effect in a live deployment of the tested pattern | Delimiter tagging of retrieved text; instruction hierarchy; confirmation gate on money movement; scenario B regression | Open; scenario B at M1 |
-| Blind retry double-charges | Duplicate payment or booking | Idempotency keys plus status-read-before-retry; scenario A gate | Mitigated at v0 by design |
-| API key exfiltration via trace | Key spend by third party | Keys only from env; redaction pass strips key-shaped values before trace write; gitignore on traces dir | Open; implement at M1 |
-| PII in traces and goldens | Privacy exposure on share | Redaction of emails, card numbers, and names to synthetic constants; golden review checklist | Open; implement at M1 |
-| Diagnoser prompt injection | Attacker-crafted trace steers policy patch | Diagnoser input treated as untrusted; patch schema validation; human review before replay; never auto-apply | Open; implement at M2 |
-| Malicious dependency | Supply-chain compromise of runner | Pinned deps with lockfile; minimal dep set; no network inside tools | Open; implement at M1 |
-| Stale-read lost update | Silent data corruption pattern | Versioned reads plus re-read-before-write; scenario C regression | Open; scenario C at M1 |
-| Golden trace tampering | Verdict truth silently changed | Golden diffs need reviewer plus offline check proof; CI pins expected verdicts | Open; process at M1 |
+| Secret exfiltration through a trace | A key or token lands in a shareable file | Write-time redaction by key name (`*_token`, `*secret*`, `*key*`); tests assert redaction; `check --scan-pii` scans raw files | Mitigated; name-based, so a secret under an innocuous key name is not caught (host must name keys sensibly) |
+| PII in traces | Privacy exposure on share | Write-time redaction of email shapes and card-like digit runs; `--scan-pii` gate exits 1 on a hit | Mitigated for those two shapes only; other PII (names, addresses) is not detected |
+| Unauthenticated control-plane access | Read or write of events, pruning | Binds to `127.0.0.1` by default; `AGENTCRASH_API_TOKENS` bearer allowlist returns 401 otherwise | Mitigated; see section 4 for non-loopback use |
+| Trace tampering | Verdict truth silently changed | `prev_hash` chain and `verify_chain` give an integrity signal | Open by design: the chain is NOT tamper-proof (an attacker can recompute it) |
+| Duplicate side effects after an ambiguous timeout | Duplicate payment or update in the tested host | `duplicate_mutating_effect`; `timeout_after_commit` fault to reproduce it | This is the failure AgentCrash exists to detect |
+| Stale read leading to a lost update | Silent data corruption pattern | `FreshWriteOnly`, `NoLostUpdate`; `concurrent_update` fault | Detected by verifiers when the host records versions |
+| Poisoned document drives an agent action | Unauthorized side effect in the tested host | `poisoned_doc` fault injects an inert marker only; the host's own defenses are what is under test | Inert by design: no adversarial text ships in core |
+| Model-proposed patch steers policy | Attacker-crafted trace influences a patch | Opt-in transport that fails closed; patch must validate against `policy_patch/v1`; human review before applying | Mitigated; patches are proposals, never verdicts |
+| Malicious dependency | Supply-chain compromise | Two runtime deps (`pyyaml`, `jsonschema`); server extras (`fastapi`, `uvicorn`) are optional | Open: no lockfile-audit job in CI yet (roadmap R7) |
+| Malicious plugin passed to `--plugin` | Arbitrary code runs in `check` | `--plugin` imports a dotted module you name; only pass code you trust | Accepted; documented |
+| Corrupt or hostile trace file | Crash or false pass | Malformed traces exit 3 and never pass; `verify_chain` names the first bad link | Mitigated |
 
-## 3. Poisoned docs are test content, never exfil
+## 3. Secrets handling
 
-The poisoned strings in scenario B exist to test defenses, and they are
-dangerous to handle carelessly because they read like real instructions:
+- Secrets come from the environment only. The variables the package reads
+  are `AGENTCRASH_API_TOKENS` (server), `AGENTCRASH_LLM_BASE_URL` and
+  `AGENTCRASH_LLM_API_KEY` (opt-in patch proposals), and
+  `AGENTCRASH_DISABLED` (a switch, not a secret).
+- No key is accepted as a CLI flag. `check` and `serve` have no key options.
+- No key, token, or fixture credential is committed. `.gitignore` excludes
+  `.env`, `*.pem`, `*.key`.
+- Without `AGENTCRASH_LLM_BASE_URL`, `fetch_live_patch` returns `None` and
+  makes no network call (asserted in `tests/test_generic_core.py`).
+- Tests and CI use no real keys and need none.
+- Logs and error messages should name the tool and arg keys, not values.
 
-- Storage: all adversarial strings live in one fixture file with a header
-  stating they are attack test content. No other file may contain them.
-- Tagging: every doc byte entering a trace carries untrusted_source true and
-  the fixture name it came from.
-- Rendering: CLI output wraps retrieved doc content in labeled delimiters so
-  operators never mistake test content for product guidance.
-- Copy rule: contributors never paste fixture strings into issues, chats, or
-  prompts except inside the tagged harness path.
-- Rotation: fixture strings change per milestone so agents cannot memorize
-  them; scenario B goldens pin the exact strings used.
+Incident rule: on a suspected key or PII leak, rotate the credential, delete
+the exposed trace or report, and add the lesson to the runbook (doc 14).
 
-## 4. Tool sandboxing
+## 4. Control plane: loopback default and token auth
 
-Synthetic tools are sandboxed by construction, and the rules stay strict as
-real adapters arrive:
+- `python -m agentcrash serve` binds `--bind 127.0.0.1` by default
+  (`--port` defaults to 8901).
+  Keep it on loopback unless a reverse proxy with TLS sits in front.
+- If `AGENTCRASH_API_TOKENS` is set (comma-separated), every `/v1/*` request
+  needs `Authorization: Bearer <token>` from that list; otherwise it gets
+  `401`. The Lab static assets stay public so the page can load. If the
+  variable is unset, the API is open: acceptable on loopback only.
+- The SDK sends its `api_key` from `WorkflowConfig` as the bearer token. The
+  SDK flush is best-effort and never raises into the host.
+- Ingestion is idempotent on `event_id`. `/v1/admin/prune` enforces
+  retention (`keep_last_n` and/or `older_than_days`).
+- If you bind a non-loopback address, you own TLS, network ACLs, and token
+  rotation. Binding publicly without tokens is unsupported.
 
-- No network, no filesystem, no subprocess inside tools. Tools compute from
-  args, seed, and virtual clock plus the explicit in-memory store.
-- The store is per-run and in-memory; nothing persists between runs except
-  the trace file the runner writes.
-- Tool args are schema-validated before execution; unknown tools and extra
-  args are rejected and recorded, never executed.
-- When real-world adapters are added after v0, each gets an allowlist, a
-  confirmation gate for side effects, and a dry-run mode. No live adapter
-  ships without all three.
+## 5. Tool and fault safety
 
-## 5. Secrets handling for model API keys
+- Faults are applied only at boundaries the host names in `configure_faults`
+  and only when `WorkflowConfig(fault_injection=True)`. Unknown fault kinds
+  are refused. The catalog (`timeout_after_commit`, `timeout_before_commit`,
+  `concurrent_update`, `poisoned_doc`) has no default tool target, so nothing
+  is hit by accident.
+- `maybe_fault` returns a signal to the host; the host decides what its tool
+  does. AgentCrash does not wrap, execute, or sandbox host tools.
+- Run chaos only against test or staging resources. Pointing a fault-injected
+  workflow at production payments or real customer records is the operator's
+  risk to avoid; core cannot prevent it.
+- `ledger.py` is a synthetic store test double and holds no real data.
 
-- Keys arrive through the environment (LLAMA_API_KEY) and never through
-  flags, files, or committed config.
-- The CLI rejects a key passed as a flag value with an error that names the
-  env var to use instead.
-- The tracer redacts values matching key, token, and bearer patterns before
-  writing any line, and tests assert redaction on synthetic key fixtures.
-- Logs and error messages never echo tool args wholesale; they name the tool
-  and the arg keys, not the values.
-- CI holds the live key as a secret only in the G5 scenario job; all other
-  jobs run with a dummy key and must pass offline.
+## 6. Trace redaction (matches `tracer.py`)
 
-## 6. Trace redaction of PII
+Redaction is applied at write time (`redact()` in `tracer.py`; the SDK calls
+the same function on `inputs` and `outputs`), so raw values never rest on
+disk.
 
-- Redaction runs at write time inside the tracer, not as a later cleanup
-  pass, so raw values never rest on disk.
-- Default rules: email shapes become fixed synthetic constants, card-like
-  digit runs become a fixed test constant, person names in fixtures come
-  from a fixed synthetic roster.
-- Golden traces ship only with synthetic values; a golden containing a
-  real-looking address or number fails review.
-- Builder traces with real-ish data stay local and gitignored; sharing a
-  trace means re-running with synthetic fixtures or passing the redactor.
+| Rule | Behavior |
+|---|---|
+| Sensitive key names | A mapping key matching `*_token`, `*secret*` or `*key*` (case-insensitive) has its value replaced with `[REDACTED]` |
+| Exempt key | `idempotency_key` is never redacted, because the duplicate-effect check needs it |
+| Email shapes | Inside any string, replaced with `redacted@example.com` |
+| Card-like digit runs | 13 to 19 digits, optional single space or hyphen separators, replaced with `4111111111111111` |
+| Recursion | Applied through nested dicts and lists |
+| Harness-owned fields | `event_id`, `prev_hash`, `ts_virtual`, `run_id` and similar fields are not redacted, so the chain stays valid |
+| Size cap | `detail` over 64 KB (65,536 bytes) is replaced by a preview with a truncation marker |
+
+Limits to state plainly: redaction is pattern-based. It does not detect
+names, addresses, or secrets stored under innocuous key names. Review sample
+traces before sharing them.
+
+`python -m agentcrash check --trace run.jsonl --invariant required_step:charge --scan-pii`
+re-scans the raw trace (and `--state` file) for emails and card-like runs and
+exits 1 on any hit. The redaction placeholders are exempt. `scan_pii.py` uses
+the same regexes as `tracer.py`; change them together.
+
+Sharing rule: builder traces with real-ish data stay local. To share a trace,
+re-run it with synthetic inputs or confirm `--scan-pii` is clean.
 
 ## 7. Supply chain
 
-- Python 3.11 plus pinned dependencies in a lockfile; upgrades are explicit
-  PRs with the full suite green.
-- Minimal dependency policy: the runner, tracer, and verifiers avoid new
-  dependencies; each addition names the capability it buys in the PR.
-- Model access goes through one adapter module so key handling and redaction
-  have a single audit point.
-- No remote code execution paths: scenario files are data, policy patches
-  are validated diffs, and neither is evaluated as code.
+- Runtime dependencies are `pyyaml` and `jsonschema`. Extra `server` adds
+  `fastapi` and `uvicorn`; extra `dev` adds `pytest`, `ruff`, `black`.
+- Each new dependency names the capability it buys in the PR. The standard
+  stdlib `serve()` path keeps the control plane usable without FastAPI.
+- Scenario-like inputs are data: policies and patches are validated against
+  bundled JSON schemas and never evaluated as code. The one code-loading path
+  is the explicit `--plugin` option (section 2).
+- Release hygiene (pinning, audit, signing) is roadmap R7.
 
-## 8. Safety rules: synthetic env only
+## 8. Safety rules
 
-1. No live payments, no live refunds, no real customer records. Every money
-   movement in this repo touches the synthetic charge_card tool only.
-2. No production credentials anywhere in the repo, fixtures, or goldens.
-3. Live-model runs are capped: fixed scenario list, fixed seed matrix, fixed
-   per-run step budget. A runaway loop hits the step cap and stops.
-4. Diagnoser patches never apply themselves: every patch needs human review
-  and a replay report before it becomes policy.
-5. Incident rule: any suspected key or PII leak rotates the key, deletes the
-   exposed trace, and records the lesson in the runbook. Speed first, then
-   the write-up.
+1. Test environments only. No live payments, refunds, or real customer
+   records under fault injection.
+2. No production credentials in the repo, fixtures, traces, or reports.
+3. A model may only propose a schema-valid policy patch; deterministic
+   invariants own every verdict (ADR-001, ADR-004).
+4. Proposed patches are reviewed by a human and re-checked before they become
+   policy.
+5. The core never imports host or domain stacks (ADR-009, guard test in doc 09).
 
-## 9. Compliance notes for a startup
+## 9. Compliance notes
 
-- Data retention: local traces are working data and may be deleted at any
-  time; goldens are the retained record with synthetic values only. Proposed
-  default: working traces older than one milestone are deleted.
-- Disclosure: demos and posts state that AgentCrash tests agents in
-  synthetic environments and that results describe harness behavior, not
-  production safety of any model.
-- Regulatory posture: v0 processes no real personal data and offers no
-  regulated function, so the compliance load is retention plus disclosure.
-  Revisit before any hosted service, real user data, or live adapter.
-- Reviewer: name one accountable reviewer for security notes at M1 and a
-  review point per milestone after that. No corporate bureaucracy beyond it:
-  one owner, one checklist, one review per milestone.
+- Data retention: traces and reports are working data and may be deleted at
+  any time. For a running control plane, enforce a policy with
+  `/v1/admin/prune` (`keep_last_n`, `older_than_days`).
+- Disclosure: demos and posts state that AgentCrash tests agents against
+  injected faults and that a PASS describes the checked invariants, not the
+  overall safety of an agent or a model.
+- Regulatory posture: the package processes only what a host sends it. It
+  offers no regulated function. Revisit before any hosted service or any
+  customer-data ingestion.
+- Reviewer: one accountable reviewer for security notes, reviewed each
+  milestone (M0-M3, ADR-006).
 
-## 10. Worked example: redaction plus confirmation gate
+## 10. Worked example: redaction and PII gate
 
-A billing question arrives with a customer email in the prompt. The run
-proceeds as follows:
+A host records a tool call whose inputs contain a customer email, an
+`api_key`, and an `idempotency_key`:
 
-1. The adapter logs the prompt with the email replaced by a synthetic
-   constant before the trace line is written.
-2. The read_doc tool returns vendor terms plus an embedded refund
-   instruction; both are tagged untrusted in the trace.
-3. The agent proposes a refund call; the policy engine blocks it because
-   money movement needs a recorded confirmation that does not exist.
-4. The trace shows a denied policy decision, the verifier for
-   no_side_effect_from_doc passes, and no key or email appears in the file.
-5. A reviewer can share this trace externally as-is because every value in
-   it is synthetic by construction.
+1. `record_tool("payments.charge", inputs={"email": "pat@corp.example", "api_key": "sk-123", "idempotency_key": "o-1"}, ...)`.
+2. The stored event has `email` equal to `redacted@example.com`, `api_key`
+   equal to `[REDACTED]`, and `idempotency_key` still `o-1`.
+3. `python -m agentcrash check --trace run.jsonl --invariant duplicate_mutating_effect --scan-pii`
+   passes the scan; the placeholders are exempt.
+4. If a raw email were present in a hand-written trace file, the same command
+   exits 1 and names the file and line.
 
-Golden review checklist for traces like this one:
+Review checklist before sharing a trace:
 
-- No live-looking emails, numbers, names, or keys anywhere in the file.
-- Every retrieved doc span carries the untrusted tag with a fixture name.
-- Every blocked side effect has a matching denied policy decision line.
+- No live-looking emails, card numbers, names, or keys in the file.
+- `--scan-pii` exits 0.
 - Verdicts reproduce offline with the network disabled.
 
 ## 11. Open Questions
 
 | Question | Owner | Notes |
 |---|---|---|
-| Secret-scanning hook for commits (pre-commit versus CI) | Tech lead | Decide at M1; either is fine if traces stay gitignored |
-| Redaction rule list location (tracer config versus policy file) | Tech lead | Proposal: tracer-owned config so redaction cannot be policy-patched away |
+| Secret-scanning hook for commits (pre-commit versus CI) | Tech lead | Decide with R7; traces and reports are already gitignored |
+| Configurable redaction key patterns | Tech lead | Proposal: tracer-owned config so redaction cannot be policy-patched away |
+| Dependency audit job in CI | Tech lead | Roadmap R7 |

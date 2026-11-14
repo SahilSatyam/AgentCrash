@@ -1,155 +1,158 @@
 # 12 — Non-Functional Requirements (NFRs)
 
-**Status:** Draft · **Owner:** Founder (scope; OQ-01 in [03](03-requirements-and-srs.md) resolved: Founder) · **Phase gate:** M0 (Prototype v0) entry
+**Status:** Current for `agentcrash-core` 0.3.0 · **Owner:** Founder (scope sign-off) · **Milestone scheme:** M0–M3 (ADR-006)
 
-> ADLC lens: these targets keep a laptop-run startup prototype honest — reproducibility first
-> (a chaos harness that flakes is worthless), tiny budgets (no infra spend before traction),
-> and a demo anyone can follow. Every NFR names a metric, a concrete target, the workload it
-> holds under, and how to verify it. Traceability back to functional requirements in
-> [03](03-requirements-and-srs.md) is explicit. No day-wise timeline is used; NFRs gate
-> phases, not dates.
+> ADLC lens: these targets keep a laptop-run, zero-infrastructure library honest. Every NFR
+> names a metric, a target, the workload it holds under and a verification command or test.
+> An NFR with no way to verify it is not listed. "Gap" marks a target that is enforced by
+> hand or not yet by an automated test; the gap and its roadmap item are in §8. Traceability
+> to functional requirements in [03](03-requirements-and-srs.md) is explicit. No day-wise
+> timeline is used; NFRs gate milestones.
 
-## 1. Determinism & reproducibility (must-meet for Phase 1)
+## 1. Determinism and reproducibility
 
-| ID | Metric | Target | Workload / conditions | Verification method | Priority |
+| ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
-| NFR-DET-01 | Fault-schedule equality across reruns | 100% identical fault steps, types, latencies for same (scenario, seed, policy) | `timeout_retry`, seed 42, 5 consecutive runs, stub agent | `diff <(normalize run1.jsonl) <(normalize run2.jsonl)` empty ignoring `run_id` + wall-clock fields; `pytest tests/test_determinism.py` | P0 |
-| NFR-DET-02 | Trace byte-equality (modulo IDs) | Same as DET-01 extended to all event payloads + virtual timestamps | Same workload; plus seed sweep 1…20 | Rerun-diff over the seed sweep; CI fails on any mismatch | P0 |
-| NFR-DET-03 | Verifier output stability | Byte-identical JSON report for 3 checks of the same trace, incl. one with network disabled | Golden failing + golden passing traces | `check --format json` × 3, `sha256sum` equal; covers FR-16 | P0 |
-| NFR-DET-04 | Virtual-clock purity | Zero wall-clock reads in `tools/`, `injector/`, `tracer/` (static) + virtual timestamps monotonic | Full v0 codebase | `grep -rn 'time.time\|Date.now\|monotonic' tools injector tracer` empty in review; `seq`/`virtual_ts_ms` monotonicity asserted per trace | P0 |
+| NFR-DET-01 | Deterministic modules read no wall-clock or global RNG | `clock.py`, `tracer.py`, `ledger.py`, `injector.py`, `verifiers.py` import none of `time`, `datetime`, `random` | Source tree | `pytest tests/test_acr001.py` (AST check; also its own CI step). Covers FR-51 | P0 |
+| NFR-DET-02 | Verdict report stability | Two `check` runs on the same trace, invariants and state write byte-identical report files (sorted keys, no timestamps) | Any SDK-schema trace | Run `check --report-out a.json` twice and compare file hashes `tests/test_gaps.py::test_check_reports_are_byte_identical_across_runs`. Covers FR-31, FR-36 | P0 |
+| NFR-DET-03 | Trace evidence is order-stable | `TraceWriter` output has sorted keys, gapless `event_id`, monotonic `ts_virtual`; `verify_chain` returns `ok` on any untouched file | 200-event writer run | `tests/test_tracer.py`, `tests/test_generic_core.py::test_tracer_never_redacts_its_own_hash_fields`. Covers FR-20, FR-21 | P0 |
+| NFR-DET-04 | Virtual-clock purity | Synthetic time advances only through `VirtualClock.sleep`; negative inputs refused | `clock.py` | `tests/test_clock.py`. Covers FR-24 | P1 |
 
-Grounding: deterministic-simulation practice (single seeded PRNG as the only entropy source,
-one virtual clock as the only time source — the same discipline FoundationDB-style DST
-harnesses use) applied at startup scale: one seed reproduces one universe.
+Principle kept from the original design: one seeded source of entropy and one virtual clock,
+so a seed reproduces a fault schedule. SDK `run_id` values are random (`uuid4`) by design;
+byte-equality claims apply to verdict reports and `TraceWriter` output, not to SDK run ids.
 
-## 2. Performance budgets (laptop-grade)
+## 2. Performance budgets
 
-| ID | Metric | Target | Workload / conditions | Verification method | Priority |
-|---|---|---|---|---|---|
-| NFR-PERF-01 | Harness overhead vs bare agent loop | ≤ 10% added wall-clock per run | 12-step stub run, timeout_retry, measured over 10 runs on a 2-core laptop | `bench/run_overhead.py` reports mean overhead; Phase 1 gate | P0 |
-| NFR-PERF-02 | Trace size | ≤ 2 MB for a 100-step run; ≤ 20 KB per event average | Synthetic 100-step stress scenario (stub agent, max_steps 100) | `wc -c` on produced trace; gate fails above budget | P0 |
-| NFR-PERF-03 | `check` latency | ≤ 2 s wall-clock on the largest golden trace | Golden suite on reference laptop, cold cache | `time agentcrash check --trace <largest>`; CI perf smoke | P1 |
-| NFR-PERF-04 | `replay` bounded cost | ≤ 2× single-run cost (patched run + control run, shared setup) | timeout_retry seed 42 + control scenario | Timed replay script; reported in demo notes | P1 |
+Method (`bench/run_overhead.py`, result in `docs/phase7-evidence/bench.json`): a bare 12-step
+loop and the same loop instrumented through the real SDK path (`run`, `step`, `maybe_fault`,
+`record_tool`, so three hash-chained, redacted events per step) are run 30 times,
+interleaved so machine drift hits both equally, after one warm-up each. Each stub step does
+2 ms of deterministic busy work standing in for a tool or model call. That is a harsh floor:
+networked tool calls typically take 10 ms or more and model calls 100 ms or more, so real
+overhead is smaller. The script compares medians and exits non-zero on a budget miss.
+Absolute per-event costs do not depend on the 2 ms assumption.
 
-Rationale (startup costs): no budget for runners bigger than a laptop or a free CI tier, so
-the harness must be near-free next to the model bill. Model latency is excluded from every
-budget — only harness time counts.
+| ID | Metric | Target | Measured (`bench.json`) | Workload / conditions | Verification | Priority |
+|---|---|---|---|---|---|---|
+| NFR-PERF-01 | SDK overhead vs bare loop, relative | Median instrumented run ≤ 10% slower than median bare run | 5.7% (`overhead_ratio` 0.057; 25.402 ms vs 24.031 ms) | 12 steps, 2 ms stub step, 30 interleaved runs, medians | `python bench\run_overhead.py` (`overhead_pass`). Covers FR-01, FR-19 | P0 |
+| NFR-PERF-02 | Trace size | A 100-step trace ≤ 2 MiB (2,097,152 bytes) | 37,797 bytes (`hundred_step_bytes`), about 380 bytes per event | 100 `TraceWriter` events with a small `args`/`detail` payload | `python bench\run_overhead.py` (`trace_size_pass`). Covers FR-20 | P0 |
+| NFR-PERF-03 | Tracer cost per event | `TraceWriter` ≤ 60 µs per event, flushed per line | 30.7 µs | 2000 events, best of 5 | `python bench\run_overhead.py` (`tracer_pass`) | P0 |
+| NFR-PERF-04 | SDK cost per event (absolute) | Reported, not gated | 14.0 µs per event; 114.2 µs added per step (`overhead_us_per_step`) | 2000 `record_tool` events, best of 5 | `bench.json` | P1 |
+
+Rationale: the harness must be near-free next to tool and model time. Model latency is
+excluded from every budget; only harness time counts. Removed in 0.3.0: the old
+`check` latency and `replay` cost budgets, which measured commands that no longer exist.
 
 ## 3. Reliability (correctness of the harness itself)
 
-| ID | Metric | Target | Workload / conditions | Verification method | Priority |
+| ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
-| NFR-REL-01 | Verifier false-pass rate | 0 false passes on the golden suite (all seeded double-charge, give-up, and clean traces) | `tests/golden/` (≥ 6 traces: 2 failing each invariant, 2 passing) | Golden suite must be 100% green; any false pass blocks Phase 1 exit | P0 |
-| NFR-REL-02 | Verifier false-fail rate | 0 false fails on golden passing traces | Same suite | Same run; a fix that breaks the control scenario must FAIL (proves the check is live) | P0 |
-| NFR-REL-03 | Fail-closed behavior | 100% of invalid inputs (unknown fault type, bad patch schema, missing trace) exit non-zero with no partial artifacts | Fault-injection matrix incl. FR-07/08/22 cases | `pytest tests/test_fail_closed.py`; assert no trace/patch file created | P0 |
-| NFR-REL-04 | No secret leakage | 0 occurrences of planted canary secrets in any emitted trace/report across the suite | Canary `canary_token` value injected into tool args in a test run | Grep traces + reports for canary; covers FR-12 | P0 |
+| NFR-REL-01 | SDK never breaks the host | No exception from capture or export reaches host code; non-JSON values are stringified | Dead endpoint; datetime and custom-object outputs | `tests/test_sdk.py::test_dead_endpoint_never_breaks_host`, `tests/test_generic_core.py::test_sdk_accepts_non_json_tool_outputs`. Covers FR-06, FR-07 | P0 |
+| NFR-REL-02 | Bounded memory | Export queue never exceeds `max_queue`; overflow drops oldest and is counted | `max_queue=4`, 10 steps | `tests/test_sdk.py::test_bounded_queue_drops_oldest`. Covers FR-05 | P0 |
+| NFR-REL-03 | Chain integrity under concurrency | `seq` is gapless and every `prev_hash` recomputes with 8 threads | 400 tool events | `tests/test_generic_core.py::test_sdk_chain_is_consistent_under_threads`. Covers FR-19 | P0 |
+| NFR-REL-04 | Idempotent ingestion | Re-posting a batch stores nothing new | Same batch twice | `tests/test_server_ingestion.py::test_idempotent_ingestion_and_run_detail`. Covers FR-38 | P0 |
+| NFR-REL-05 | Fail closed | A corrupt trace exits 3, a usage or config error exits 2, and neither is ever reported as PASS; a verifier returning a bad verdict object aborts instead of passing | `check` with a non-JSON trace, no `--invariant`, a missing file | `tests/test_gaps.py::test_check_exit_2_usage_errors`, `::test_check_exit_3_corrupt_inputs`, `::test_no_lost_update_envelope_format_and_edge_cases`. Covers FR-29, FR-33, FR-34 | P0 |
+| NFR-REL-06 | Patch gate | An invalid `policy/v1` or `policy_patch/v1` document raises before anything is applied | Unknown rule name; patch missing `source_run_id` | `tests/test_gaps.py` patch tests (malformed documents, schema-breaking rules, file errors, merge). Covers FR-46 to FR-48 | P0 |
 
-## 4. Portability & compatibility
+## 4. Portability and compatibility
 
-| ID | Metric | Target | Workload / conditions | Verification method | Priority |
+| ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
-| NFR-PORT-01 | OS support | Linux, macOS, Windows-via-WSL: full FR-01…FR-25 acceptance on each | CI matrix (3 runners) or documented manual run per OS | Matrix green for Phase 1 exit; manual log otherwise | P0 |
-| NFR-PORT-02 | Python support | 3.11, 3.12, 3.13 with no code changes | Same matrix, `python --version` variants | CI matrix; `pyproject.toml` `requires-python = ">=3.11"` | P0 |
-| NFR-PORT-03 | Dependency footprint | ≤ 5 runtime deps (PyYAML, jsonschema, llama client, click/argparse stdlib, pytest for dev) | Fresh `pip install` from lockfile | `pip freeze` audit in review; offline stub path needs zero third-party calls | P1 |
-| NFR-PORT-04 | Offline reproducibility | Stub-agent golden rerun passes with loopback networking disabled | `timeout_retry` stub plan, seed 42 | Unplugged/namespace-blocked CI job green | P0 |
+| NFR-PORT-01 | Python support | 3.11, 3.12, 3.13 with no code changes; `requires-python = ">=3.11"` | CI matrix | `.github/workflows/ci.yml` runs ruff, black `--check`, `pytest -q` and the ACR001 test on each version | P0 |
+| NFR-PORT-02 | Dependency footprint | 2 runtime dependencies (`pyyaml`, `jsonschema`); server stack only behind the `server` extra | Fresh `pip install agentcrash-core` | `pyproject.toml` review; `tests/test_second_app.py` pins a second app to stdlib plus `agentcrash` | P0 |
+| NFR-PORT-03 | Offline operation | The full test suite needs no network, model or API key | `pytest -q` with no credentials set | 56 offline tests pass in CI | P0 |
+| NFR-PORT-04 | OS support | CI runs on Linux (ubuntu-latest). Windows 11 is the maintainer's development platform and is exercised manually; macOS is untested | `pytest -q` | CI log (Linux); manual run (Windows). Windows with Smart App Control: use `python -m agentcrash` | P1 |
 
 ## 5. Observability (every verdict explainable)
 
-| ID | Metric | Target | Workload / conditions | Verification method | Priority |
+| ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
-| NFR-OBS-01 | Verdict-to-evidence linkage | 100% of FAIL verdicts cite ≥ 1 offending step (`call_id` + `seq`) | All golden failing traces | Audit script over JSON reports; covers FR-13/25 | P0 |
-| NFR-OBS-02 | Decision coverage | 100% of retries/denials backed by a `policy_decision` event naming rule + policy hash | timeout_retry naive + fixed runs | Trace query: every 2nd+ `tool_call` for a mutating tool has a preceding decision | P0 |
-| NFR-OBS-03 | Report completeness | Every report (text + JSON) carries invariant table, side-effect count, task completion, run/seed/policy hashes | `check` + `replay` outputs | Schema-validated report fixtures; covers FR-25 | P0 |
-| NFR-OBS-04 | Human skim time | Founder can state what broke, where, and the proposed fix in ≤ 2 min from the text report | Timed dry-run with a fresh reader | Stopwatch + checklist; part of demo rehearsal | P1 |
+| NFR-OBS-01 | Verdict evidence | Every verdict row has a non-empty `evidence` string; a failing duplicate-effect verdict names the tool and both steps | `duplicate_mutating_effect`, `fresh_write_only` | `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants`, `::test_fresh_write_only_accepts_user_named_store_tools`. Covers FR-26, FR-27 | P0 |
+| NFR-OBS-02 | Report completeness | Report JSON always carries `api_version`, `run_id`, `verdict`, `results[]` | Any `check` run | Written by `cli.cmd_check`; `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants` exercises the file write. Covers FR-36 | P0 |
+| NFR-OBS-03 | Machine-readable errors | With `--format json`, a failure prints `{"api_version", "code", "exit", "hint"}` | Missing trace, no invariants | `tests/test_gaps.py::test_check_exit_3_corrupt_inputs`. Covers FR-33 | P1 |
 
-## 6. Usability (5-minute fundable demo)
+## 6. Usability
 
-| ID | Metric | Target | Workload / conditions | Verification method | Priority |
+| ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
-| NFR-USE-01 | End-to-end demo time | run (FAIL) → check → diagnose → replay (PASS) completes in ≤ 5 min wall-clock | timeout_retry, stub or cached-LLM diagnose, reference laptop | Timed `demo.sh` rehearsal; Phase 1 gate | P0 |
-| NFR-USE-02 | CLI self-description | 100% of commands/flags used in the demo appear in `--help` with an example | `run`, `check`, `diagnose`, `replay` | Help-text review checklist; covers FR-23 | P0 |
-| NFR-USE-03 | First-run success | New clone → first green control run in ≤ 15 min following README only | Clean checkout, Python 3.11+, stub agent (no API key) | Fresh-reader trial; gaps filed as doc bugs | P1 |
-| NFR-USE-04 | Error actionability | 100% of fail-closed errors name the bad value + valid options | Unknown fault, bad patch, missing trace/seed | Error-message audit against FR-07/08/22 outputs | P1 |
+| NFR-USE-01 | CLI self-description | `check --help` and `serve --help` list every flag; an unknown command exits 2 | `check`, `serve` | `tests/test_cli_help.py`. Covers FR-37 | P0 |
+| NFR-USE-02 | Error actionability | Config errors name the bad value and the fix (`no invariants: pass at least one --invariant <id>`, `unknown invariant 'x'; known verifiers: ...`) | `check` misuse | Message review plus `UnknownVerifierError` text in `_registry.py` | P1 |
 
-## 7. Maintainability & security posture (startup-scale)
+## 7. Security and maintainability
 
-| ID | Metric | Target | Workload / conditions | Verification method | Priority |
+| ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
-| NFR-MNT-01 | Verifier isolation | Each invariant is one file + one golden pair; adding an invariant touches no existing verifier | Phase 2 scenario authoring (poisoned-doc dry run) | Review: new `verifiers/<id>.py` + 2 goldens, zero edits elsewhere | P1 |
-| NFR-MNT-02 | Diagnoser blast radius | Diagnoser output validates against `policy-patch.schema.json`; non-conforming output rejected before display | Malformed-patch fixture battery | `diagnose` fixture tests; covers FR-17/22 | P0 |
-| NFR-SEC-01 | Secret hygiene | No API keys in traces, reports, goldens, or committed fixtures (canary-tested) | Full repo + generated artifacts | Canary grep in CI (see NFR-REL-04); `.env`-only credentials | P0 |
-| NFR-SEC-02 | Untrusted-content discipline (forward) | Poisoned-doc fixtures, when added, are trust-tagged + delimited and never executed as instructions | Phase 2 authoring | Design review against prompt-injection guidance (spotlighting/delimiters, confirmation gates) | P1 |
+| NFR-SEC-01 | No secrets or PII in captured artifacts | Keys matching `*_token`, `*secret*`, `*key*` (except `idempotency_key`) are `[REDACTED]`; emails and card-like runs are replaced with fixed constants | Planted `api_key` input; planted email | `tests/test_sdk.py::test_deterministic_fault_and_redaction`, `tests/test_tracer.py::test_redaction_strips_secrets_but_keeps_idempotency_key`. `check --scan-pii` is the CI guard for files (`tests/test_gaps.py::test_scan_pii_flags_raw_pii_and_passes_redacted`, card cases in `::test_card_like_runs_are_redacted`). Covers FR-15 to FR-18 | P0 |
+| NFR-SEC-02 | Control-plane auth | With `AGENTCRASH_API_TOKENS` set, every `/v1/*` call without a listed bearer token gets 401; Lab assets stay public | Stdlib server | `tests/test_server_ingestion.py::test_auth_allowlist_gates_api_but_not_lab`. Covers FR-40 | P0 |
+| NFR-SEC-03 | Local by default | `agentcrash serve` binds `127.0.0.1`. Any other bind is an explicit `--bind` | `serve --help` | `cli.cmd_serve` default; `tests/test_cli_help.py` checks the flag is documented. Covers FR-44 | P0 |
+| NFR-SEC-04 | Model is never a trust boundary | A model can only propose a patch; verdicts come from deterministic invariants; live proposals are opt-in and schema-gated | Env var unset; invalid model output | `tests/test_generic_core.py::test_live_patch_is_opt_in`. Covers FR-50 | P0 |
+| NFR-MNT-01 | Domain-free core | No domain vocabulary in `src/`, no baked-in default tool target in the fault catalog | `src/agentcrash` | `tests/test_generic_core.py::test_core_source_has_no_domain_vocabulary`, `::test_fault_catalog_targets_no_default_tool`. Covers FR-52 | P0 |
+| NFR-MNT-02 | Code hygiene | ruff clean, black clean (line length 100) | Whole repo | CI steps `ruff check .` and `black --check .` | P1 |
+| NFR-MNT-03 | New invariants are additive | A host adds an invariant by registering a `Verifier`; no core file changes | Plugin loaded with `check --plugin` | `register_verifier` API; `tests/test_second_app.py` shows a second app integrating with no core edits | P1 |
 
-Security note: the LLM is never a trust boundary in this design — verification is
-deterministic (Tracer + Verifiers) and the Diagnoser can only propose diffs. Layered
-defenses for untrusted content (delimiters, trust tags, confirmation gates, least-privilege
-tools) follow current indirect-prompt-injection practice and land with Phase 2 scenarios.
+Security note: the hash chain is an integrity signal against accidental loss or reordering.
+It is not tamper resistance, and the control-plane store is in memory with no persistence.
 
-## 8. Prioritization, tradeoffs, and cost ceiling
+## 8. Prioritization, gaps and cost ceiling
 
-Must meet before Phase 1 exit (demo/fundraising gate): NFR-DET-01…04, NFR-PERF-01/02,
-NFR-REL-01…04, NFR-PORT-01/02/04, NFR-OBS-01…03, NFR-USE-01/02, NFR-MNT-02, NFR-SEC-01.
+Gating set for a 0.3.0 release (R7): NFR-DET-01…03, NFR-PERF-01…03, NFR-REL-01…04,
+NFR-PORT-01…03, NFR-OBS-01/02, NFR-USE-01, NFR-SEC-01…04, NFR-MNT-01.
 
-Accepted temporary limitations: PERF-03/04 and USE-03/04 are rehearsed manually, not
-CI-enforced; PORT-03 allows one extra dep on justification; MNT-01/SEC-02 are Phase 2
-design constraints recorded here, not v0 code.
+Known gaps: none among the listed NFRs. NFR-DET-02, NFR-REL-05, NFR-REL-06, NFR-OBS-03 and
+the PII scan in NFR-SEC-01 are now automated in `tests/test_gaps.py`. Not listed because they
+cannot be verified today: OS coverage beyond
+Linux CI and Windows manual runs, and any latency budget for commands that do not exist.
 
-Cost ceiling (startup lens): $0 infra — harness runs on a laptop + free CI tier; the only
-spend is Llama API calls for live-agent demos (bounded: ≤ 12 steps × ≤ 3 runs per rehearsal).
-Owner approving exceptions: founder (OQ-01).
+Cost ceiling: $0 infrastructure. The library and its tests run on a laptop and a free CI tier.
+Live patch proposal is the only paid path and it is opt-in. Owner approving exceptions: Founder.
 
-## 9. Worked verification plan (how Phase 1 exit is proven)
+## 9. Worked verification plan
 
-Concrete commands the founder runs to show every P0 NFR green. Expected values are exact —
-any deviation fails the gate.
+Commands run from the repo root in PowerShell with the project venv. Expected values are
+exact; any deviation fails the gate.
 
-1. Determinism drill (DET-01/02/03): run `agentcrash run --scenario timeout_retry --seed 42`
-   five times with the stub agent; `normalize()` strips `run_id` and wall-clock fields; all
-   five diffs empty. Then `agentcrash check --format json` on the golden failing trace three
-   times (third run with loopback disabled); `sha256sum` identical thrice. Purity grep over
-   `tools/`, `injector/`, `tracer/` returns empty (DET-04).
-2. Budget drill (PERF-01/02): `bench/run_overhead.py` reports mean harness overhead 4–8%
-   (target ≤ 10%) on 10 stub runs; the 100-step stress trace weighs ~1.1 MB (target ≤ 2 MB).
-   Both numbers print into the Phase 1 exit note.
-3. Harness-correctness drill (REL-01…04): `pytest tests/golden/` — 6 traces minimum (double
-   charge ×2 seeds, give-up ×1, clean pass ×2, truncated ×1): 0 false passes, 0 false fails.
-   Fail-closed matrix: unknown fault, future fault type, malformed patch, missing trace —
-   all exit 2 with no artifacts. Canary sweep: planted `canary_token` value absent from every
-   trace and report.
-4. Portability drill (PORT-01/02/04): CI matrix (Linux + macOS + WSL, Python 3.11–3.13)
-   runs the stub golden suite; one job repeats it with networking disabled. Fresh-install
-   check: `pip install -e .` on each runner pulls ≤ 5 runtime deps (PORT-03, P1).
-5. Demo drill (OBS-01…03, USE-01/02): `demo.sh` executes the four-command narrative in
-   ≤ 5 min: run (FAIL with steps 3–4 cited) → check (JSON validates) → diagnose (patch
-   contains `retry_with_idempotency_key` + reconcile) → replay (`fix: VERIFIED, regression:
-   PASS`). A fresh reader states breakage, location, and fix from the text report in ≤ 2 min
-   (OBS-04, P1). Every demo flag exists in `--help` output (USE-02).
-6. Guardrail drill (MNT-02, SEC-01): feed `diagnose` three malformed patch fixtures —
-   all rejected before display; canary grep across the repo (committed files) clean.
+1. Determinism drill (DET-01…03): `.\.venv\Scripts\python -m pytest tests/test_acr001.py tests/test_tracer.py -q` passes.
+   Run `check --report-out a.json` and `--report-out b.json` on the same trace; `Get-FileHash a.json, b.json` shows equal hashes (DET-02).
+2. Budget drill (PERF-01…04): `.\.venv\Scripts\python bench\run_overhead.py` prints and writes `docs/phase7-evidence/bench.json`
+   (pass `--out <path>` to keep the committed file) and exits 0. Current committed values: `overhead_ratio` 0.057 against the 0.10 target
+   (`overhead_pass` true), `overhead_us_per_step` 114.2, `sdk_us_per_event` 14.0, `tracer_us_per_event` 30.7 against 60.0
+   (`tracer_pass` true), `hundred_step_bytes` 37,797 against 2,097,152 (`trace_size_pass` true). A run on other hardware may differ; the
+   pass flags are the gate, the numbers are the evidence. Medians over 30 interleaved runs absorb most scheduler noise, but rerun once
+   before filing a regression.
+3. Harness-correctness drill (REL-01…04): `.\.venv\Scripts\python -m pytest tests/test_sdk.py tests/test_generic_core.py tests/test_server_ingestion.py -q` passes.
+   Fail-closed spot check (REL-05): `agentcrash check --trace <non-JSON file> --invariant duplicate_mutating_effect` exits 3; `agentcrash check --trace x.jsonl` exits 2.
+4. Portability drill (PORT-01…03): CI matrix (Python 3.11, 3.12, 3.13) runs ruff, black, `pytest -q` (56 passed) and the ACR001 test.
+   `pyproject.toml` lists two runtime dependencies.
+5. Observability and usability drill (OBS-01/02, USE-01): `.\.venv\Scripts\python -m pytest tests/test_cli_help.py -q` passes; a failing
+   `check` run prints `[FAIL] Invariant <id> violated! (<evidence>)` and writes a report with `verdict: FAIL`.
+6. Security drill (SEC-01…04, MNT-01): `.\.venv\Scripts\python -m pytest -q` passes (56 tests), covering redaction, auth allowlist,
+   opt-in live patch and the domain-free guard.
 
-Exit rule: all six drills green ⇒ Phase 1 exits. Any red drill ⇒ the phase stays open; the
-founder records the exception approver (self) and the compensating milestone in the exit
-note — no silent waivers.
+Exit rule: all six drills green means the milestone gate passes. Any red drill keeps it open;
+the founder records the exception and the compensating milestone in the exit note. No silent
+waivers.
 
-## 9a. Sizing note: why the trace budget holds (PERF-02 arithmetic)
+## 9a. Sizing note: why the trace budget holds
 
-A generous v0 event averages ~1.1 KB (args, timestamps, hashes — measured on the golden
-timeout trace at ~900 bytes/event). Budget check:
+The committed 100-step trace is 37,797 bytes, about 380 bytes per event (`TraceWriter`, small
+payloads). Real payloads are larger because tool outputs carry content. The 2 MiB budget for 100 events
+allows about 20 KB per event, which is 50 times the measured size.
 
-| Run length | Bytes at 1.1 KB/event | Headroom under 2 MB |
-|---|---|---|
-| 12 steps (~40 events) | ~44 KB | 45× |
-| 100 steps (~330 events) | ~360 KB | 5.5× |
-| 500 steps (~1,650 events) | ~1.8 MB | still inside |
+| Run length | Bytes at 380 B/event (measured) |
+|---|---|
+| 100 events | 38 KB |
+| 1,000 events | 380 KB |
+| 5,000 events | 1.9 MB |
 
-Even a 5× event-size regression (verbose thoughts, long args) keeps the 100-step stress
-run under budget. If a future phase adds token-level thought logging, this table — not the
-2 MB target — gets revised first, with the founder approving the new ceiling (OQ-01).
+`detail` is capped at 65,536 bytes per event by `TraceWriter`, so one event can never exceed
+64 KiB plus envelope. If tool outputs routinely exceed a few KB, this table is revised before
+the 2 MiB target is.
 
 ## 10. Change history
 
 | Milestone | Change | Author |
 |---|---|---|
-| Pre-M0 draft | NFR skeleton with placeholder targets | Pre-M0 skeleton (author unrecorded; OQ-01) |
-| M0 draft (this file) | Full NFR set DET/PERF/REL/PORT/OBS/USE/MNT/SEC with metric + target + verification; all TBDs replaced | Group B |
-
+| Pre-M0 draft | NFR skeleton with placeholder targets | Pre-M0 skeleton (author unrecorded) |
+| M0 draft | Full NFR set for the scenario-runner prototype | Group B |
+| 0.3.0 rewrite | PERF-01/02 reworded to the interleaved-median SDK method and numbers in `bench.json`; tracer and SDK per-event budgets added; unverifiable NFRs (golden suite, replay cost, demo time, model-backed items) removed; verification drills rewritten to commands that exist | Docs rewrite |

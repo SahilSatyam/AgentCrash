@@ -1,249 +1,237 @@
-# 09 — Agent context
+# 09 - Agent context
 
-**Status:** Draft · **Owner:** Tech lead · **Last reviewed:** 2026-10-28
+**Status:** Revised for 0.3.0 · **Owner:** Tech lead · **Last reviewed:** 2026-11-14
 
 > How any coding agent (human-paired or autonomous) should work in this repo.
-> This is the working draft behind the concise root AGENTS file.
-> Startup lens: optimize for fast, safe iteration on the v0 prototype slice.
+> The short pointer is `AGENTS.md` at the repo root; this is the long form.
 
 ## 1. Project summary
 
-AgentCrash is chaos engineering for tool-using AI agents, built as a startup
-MVP. The problem: an agent can return a correct-looking answer while
-double-charging a customer, following injected instructions, or acting on stale
-data. Users are agent builders who need the path tested, not only the final
-response. The loop is Run, Inject, Trace, Check, Diagnose and Replay:
+AgentCrash is chaos engineering for tool-using AI agents, shipped as the PyPI
+package `agentcrash-core` (import `agentcrash`, MIT, Python 3.11+). It is
+framework-neutral: the host (plain Python, LangGraph, OpenAI Agents SDK,
+CrewAI, MCP) owns the agent loop. AgentCrash observes it, injects faults at
+named tool boundaries, and judges the resulting trace.
 
 | Stage | Component | Output |
 |---|---|---|
-| Run | Agent Adapter (simple ReAct loop, Meta Llama adapter first) | Agent behavior in a synthetic env |
-| Inject | Fault Injector (ambiguous timeouts, poisoned docs, concurrent updates) | A reproducible failure |
-| Trace | Tracer (one shared JSONL schema) | One JSONL trace file per run |
-| Check | Verifiers (deterministic invariants) | Pass or fail per invariant |
-| Diagnose and Replay | Diagnoser (LLM proposes policy diffs only) plus Replay Runner | Patch file plus fix and regression report |
+| Instrument | SDK (`sdk.py`): `AgentCrash`, `ac.run(name)`, `run.step(name)`, `record_tool` | Versioned, hash-chained, redacted events |
+| Inject | Injector (`injector.py`): fault catalog, `ac.configure_faults`, `run.maybe_fault(boundary)` | A reproducible failure at a tool boundary |
+| Trace | Events (`events.py`, schema v1) and standalone JSONL writer (`tracer.py`) | Trace events, or a JSONL file |
+| Check | Invariants and verifiers (`invariants.py`, `verifiers.py`, `evaluate.py`) | PASS or FAIL per invariant, report file |
+| Propose (opt-in) | Policy (`policy.py`): `policy/v1`, `policy_patch/v1`, `fetch_live_patch` | A schema-gated patch proposal, never a verdict |
+| Serve | Control plane (`server.py`) and Lab UI | `/v1` API on loopback |
 
-Prototype slice v0 covers exactly one failure: ambiguous tool timeout with an
-exactly-once side effect (the double-charge story in the README).
-Scenarios 2 (poisoned docs) and 3 (stale reads) are defined but not built yet.
+Hard rules carried from the original design:
+
+1. Deterministic invariants own verdicts. A model may only PROPOSE policy
+   patches, and every patch is schema-validated (ADR-001, ADR-004).
+2. The core is domain-free (ADR-009). `tests/test_generic_core.py` fails the
+   build if domain vocabulary enters `src/agentcrash/`.
+
+Removed in 0.3.0 (see ADR-009 and `CHANGELOG.md`): the scenario runner, the
+built-in agent and model adapters, the golden suite, and the payment demo.
+`diagnose` and `replay` return as host-supplied runners (roadmap R6). Do not
+re-add any of these to core.
 
 ## 2. Repository map
 
 | Path | What lives there | Who edits it |
 |---|---|---|
-| README file | Product story, CLI workflow, example trace | Keep in sync with CLI flags |
-| docs overview | Architecture and prototype slice definition | Design changes only |
-| docs adlc | Lifecycle docs (this set), phase-gated, no day timelines | All contributors |
-| src agentcrash adapter | Agent Adapter: ReAct loop plus model adapters (llama first) | Agent work |
-| src agentcrash tools | Synthetic Tools: seeded, virtual-clock tools | Tool work |
-| src agentcrash injector | Fault Injector: scenario definitions plus fault programs | Scenario work |
-| src agentcrash tracer | Tracer: JSONL event schema plus writer and reader | Rarely; schema is stable |
-| src agentcrash verifiers | Verifiers: deterministic invariant checks per scenario | Verifier work |
-| src agentcrash policy | Policy Engine: YAML and JSON retry, idempotency, confirmation rules | Policy work |
-| src agentcrash diagnoser | Diagnoser: LLM prompt plus structured policy-diff output | Diagnoser work |
-| src agentcrash replay | Replay Runner: re-execution with patched policy | Runner work |
-| src agentcrash cli | CLI entry point with run, check, diagnose, replay | CLI work |
-| scenarios dir | scenario.yaml files: task, fault program, invariants | Scenario work |
-| policies dir | Base policies and generated patches | Generated plus reviewed |
-| traces dir | Run outputs, one JSONL file per run (gitignored except goldens) | Generated |
-| tests dir | Unit, integration, scenario, and regression suites | All contributors |
-| tests golden | Golden traces with expected verifier verdicts | Updated deliberately |
+| `README.md`, `CHANGELOG.md` | Product story, install, API tour, release notes | Keep in sync with CLI and API |
+| `docs/overview.md`, `docs/setup.md`, `docs/architecture-decoupling.md` | Overview, setup loop, core-vs-host boundary | Design changes only |
+| `docs/plans/2026-11-14-sota-roadmap.md` | Roadmap R1-R7 (draft; implement only on owner `go`) | Owner |
+| `docs/adlc/` | Lifecycle docs (this set); historical record plus current ADRs | All contributors |
+| `docs/phase7-evidence/` | `bench.json` (perf numbers), `cost-sheet.md`, `regression-report.json` | Regenerated by `bench/run_overhead.py` |
+| `src/agentcrash/sdk.py` | `AgentCrash`, `WorkflowConfig`, `RunContext`, workflow decorator, bounded exporter | SDK work |
+| `src/agentcrash/events.py` | Event schema v1 (`make_event`) | Rarely; versioned |
+| `src/agentcrash/injector.py` | `FAULT_CATALOG`, `validate_fault_entry`, `UnknownFaultError` | Fault work |
+| `src/agentcrash/tracer.py` | `TraceWriter`, `verify_chain`, `compute_run_id`, `redact` | Rarely; schema is stable |
+| `src/agentcrash/clock.py` | `VirtualClock` | Rarely |
+| `src/agentcrash/_registry.py` | `Verdict`, `Verifier` protocol, `register`, `get` | Verifier work |
+| `src/agentcrash/invariants.py` | `RequiredStep`, `DuplicateMutatingEffect` | Verifier work |
+| `src/agentcrash/verifiers.py` | `FreshWriteOnly`, `NoLostUpdate`, `run_verifiers`, loaders | Verifier work |
+| `src/agentcrash/evaluate.py` | `evaluate_trace`, `compare_reports` | Verifier work |
+| `src/agentcrash/policy.py` | `policy/v1`, `policy_patch/v1` (RFC 7396), `diff_policies`, `fetch_live_patch` | Policy work |
+| `src/agentcrash/ledger.py` | Synthetic versioned store, a test double | Test-support |
+| `src/agentcrash/scan_pii.py` | Offline PII scan behind `check --scan-pii` | Keep aligned with `tracer.py` shapes |
+| `src/agentcrash/server.py` | stdlib loopback `serve()`, lazy FastAPI factory, `/v1` routes | Control-plane work |
+| `src/agentcrash/cli.py`, `__main__.py` | CLI: `check` and `serve` only (plus `--version`) | CLI work |
+| `src/agentcrash/lab/`, `src/agentcrash/schemas/` | Static Lab UI; bundled JSON schemas | UI / schema work |
+| `tests/` | Offline pytest suite (see doc 10) | All contributors |
+| `bench/run_overhead.py` | Overhead benchmark (NFR-PERF-01) | Perf work |
+| `examples/minimal_agent/app.py` | Reference integration using only stdlib plus `agentcrash` | Keep green (`test_second_app.py`) |
+| `.github/workflows/ci.yml` | CI gates, matrix py3.11-3.13 | Tooling work |
 
-Planned CLI module layout (do not invent alternate entry points):
+There is no `scenarios/`, `policies/`, or `traces/` directory in the product
+anymore. Trace files are whatever the host writes (the setup guide uses
+`run.jsonl`); `check` writes verdict reports under `reports/` (gitignored).
 
-    src/agentcrash/__init__.py
-    src/agentcrash/cli.py
-    src/agentcrash/adapter/
-    src/agentcrash/tools/
-    src/agentcrash/injector/
-    src/agentcrash/tracer/
-    src/agentcrash/verifiers/
-    src/agentcrash/policy/
-    src/agentcrash/diagnoser/
-    src/agentcrash/replay/
+## 3. Environment setup (Windows PowerShell + uv)
 
-## 3. Environment setup
+Python 3.11 or newer. Commands assume the repo root and the project venv.
 
-- Runtime: Python 3.11 or newer. Check with python3 --version.
-- Model access: Meta Llama via the standard API adapter. The key is provided
-  through the environment, never committed (see doc 11 on security).
+```powershell
+uv venv
+uv pip install -e ".[dev]"
+.\.venv\Scripts\python -m pytest -q
+```
 
-Run these setup steps inside WSL (uv-managed venv; no `pip` binary needed):
+Use `.\.venv\Scripts\python -m ...` for everything. On Windows, Smart App
+Control or WDAC can block unsigned console-script launchers such as
+`.venv\Scripts\agentcrash.exe` (Code Integrity event 3077).
+`python -m agentcrash` is equivalent and always works. Do not turn Smart App
+Control off for this; Windows cannot turn it back on without a reset.
 
-    uv venv
-    source .venv/bin/activate
-    uv pip install -e ".[dev]"
-    export LLAMA_API_KEY=paste-key-here
-
-Expected layout values used across examples in this doc set:
-
-| Value | Convention |
-|---|---|
-| Scenario file | scenarios/timeout_retry/scenario.yaml |
-| Base policy | policies/base_policy.yaml |
-| Trace output | traces/timeout_retry-seed42.jsonl |
-| Patch output | policies/patches/timeout_retry-seed42.json |
-| Default seed | 42 (seed matrix in doc 10 on testing strategy) |
+No model key is needed for the test suite, the demo loop, or `check`.
+Secrets come from the environment only (doc 11).
 
 ## 4. Commands every agent must know
 
-### 4.1 Test and lint (run before every change report)
+### 4.1 Gates (run before reporting a change done)
 
-    source .venv/bin/activate
-    pytest -q
-    pytest tests/verifiers -q
-    pytest tests/scenarios -q -k timeout_retry
-    ruff check src tests
-    ruff format --check src tests
+```powershell
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m black --check .
+.\.venv\Scripts\python -m pytest -q
+.\.venv\Scripts\python -m pytest tests/test_acr001.py -q
+```
 
-The full suite must be green, the lint gate allows zero warnings, and the
-format gate must pass before a change is reported done.
+These are the same four steps CI runs (`ci.yml`). Expect all tests to pass.
+Ruff and Black use line length 100 (`pyproject.toml`).
 
-### 4.2 CLI workflow (the v0 loop)
+### 4.2 CLI (only `check` and `serve`)
 
-Step 1, run the agent against a chaos scenario (seeded, virtual clock):
+```powershell
+.\.venv\Scripts\python -m agentcrash --version
+.\.venv\Scripts\python -m agentcrash check --trace run.jsonl `
+  --invariant duplicate_mutating_effect --invariant required_step:charge
+.\.venv\Scripts\python -m agentcrash serve --port 8901
+```
 
-    agentcrash run --scenario timeout_retry --model llama-3.3-70b --seed 42
+`check` flags: `--trace` (required), `--invariant` (repeatable), `--plugin`
+(dotted module to import first; repeatable), `--state`, `--report-out`,
+`--format text|json`, `--scan-pii`. `serve` flags: `--port` (default 8901),
+`--bind` (default `127.0.0.1`).
 
-Step 2, verify deterministic invariants against the recorded trace:
+Exit codes: 0 PASS, 1 FAIL or PII leak, 2 usage or config error, 3 corrupt
+trace. Built-in invariants are auto-registered:
+`duplicate_mutating_effect`, `fresh_write_only`, `no_lost_update`,
+`required_step:<name>`. Anything else needs `--plugin`.
 
-    agentcrash check --trace traces/timeout_retry-seed42.jsonl
+Example output (from the setup guide's naive checkout run):
 
-Step 3, ask the diagnoser for a structured policy patch (LLM output, no verdict):
+```text
+[FAIL] Invariant duplicate_mutating_effect violated! (duplicate effect(s): payments.charge at steps charge and charge)
+[PASS] Invariant required_step:charge satisfied (step 'charge' present (4 event(s)))
+verdict=FAIL report=reports\run_<id>.verdict.json
+```
 
-    agentcrash diagnose --trace traces/timeout_retry-seed42.jsonl
+### 4.3 SDK in five lines
 
-Step 4, replay with the patched policy and check fix plus regressions:
+```python
+from agentcrash import AgentCrash, WorkflowConfig
 
-    agentcrash replay --trace traces/timeout_retry-seed42.jsonl
+ac = AgentCrash(WorkflowConfig(project="checkout-agent", fault_injection=True, seed=42))
+ac.configure_faults({"payments.charge": {"kind": "timeout_after_commit", "occurrence": 1}})
+with ac.run(name="checkout") as run, run.step("charge") as step:
+    step.record_tool("payments.charge", inputs={"order": "o-1"}, outputs={"ok": True})
+    if run.maybe_fault("payments.charge"):
+        ...  # the host's recovery logic goes here
+events = ac.trace(run.run_id)
+```
 
-Example check output shape (verifier verdicts, deterministic):
+Setting `AGENTCRASH_DISABLED=1` makes the SDK a no-op. The SDK never raises
+into the host, even with a dead `endpoint`.
 
-    [FAIL] exactly_once_mutation: 2 charge_card executions for invoice 9821
-    [PASS] task_completion: invoice 9821 status is PAID
-    trace: timeout_retry-seed42.jsonl, seed 42, verifiers 1 of 2 passed
+## 5. File and schema conventions
 
-## 5. File conventions
-
-> Canonical trace envelope is doc 06 §5 per ADR-006. The older dotted
-> names (`tool.call`, `clock_ms`, `TIMEOUT_AMBIGUOUS`, …) below were
-> replaced in Phase 1; scenario values are unchanged.
-
-Scenario files are YAML following the `scenario/v1` schema (doc 06 §3).
-Keep the `payment_gateway_timeout` scenario as the reference example:
-
-    schema_version: "scenario/v1"
-    scenario: payment_gateway_timeout
-    task: "Pay vendor $150 for invoice #9821"
-    seed: 42
-    tools:
-      - name: charge_card
-        latency_ms: 300
-        timeout_ms: 1500
-        mutating: true
-        idempotency_key_arg: idempotency_key
-      - name: get_transaction_status
-        latency_ms: 120
-        timeout_ms: 1000
-        mutating: false
-        idempotency_key_arg: null
-    faults:
-      - at_step: 3
-        kind: timeout_after_commit
-        params:
-          tool: charge_card
-          simulated_latency_ms: 2000
-    invariants:
-      - id: exactly_once_mutation
-        check: "count(calls['charge_card']) == 1"
-        description: "The payment tool must commit exactly once."
-      - id: task_completion
-        check: "environment.invoice_status == 'PAID'"
-        description: "The legitimate task still completes after recovery."
-    policy: "policies/default.yaml"
-    max_steps: 12
-
-Trace events are JSONL, one object per line, UTF-8, sorted keys. Every
-event carries the full 06 §5 envelope (no per-type field sets):
-
-    event_id, prev_hash, ts_virtual, run_id, scenario, step, tool,
-    args, outcome, latency, injector_event, policy_decision, detail
-
-Notes: `event_id` is `evt_<run_id>_<zero-padded seq>` (gapless);
-`prev_hash` chains lines (`GENESIS` first); `ts_virtual` is monotonic
-virtual ms (the ONLY time verifiers may read); `outcome` is one of
-`success`, `timeout`, `error`, `blocked`, `info` (an ambiguous timeout
-is `outcome: timeout` with the ambiguity in `injector_event`
-(`fault = timeout_after_commit`)); `tool`/`injector_event`/
-`policy_decision` are
-null when not applicable; scenario-specific payloads live in `detail`
-(64 KB cap with truncation marker); secrets/PII are redacted at write
-time (`*_token`/`*secret*`/`*key` except `idempotency_key`, plus email
-and card-like shapes).
-
-Policy files are YAML or JSON with retry, idempotency, and confirmation
-sections. The diagnoser may only emit a diff against this schema, for example
-a set operation on the timeout rule for charge_card that switches the action
-to check_transaction_status with idempotency key reuse enabled.
-
-Naming: scenario dirs are snake_case, traces are scenario-seedN.jsonl,
-patches are scenario-seedN.json. Never reuse a trace filename for a new
-run; the seed in the filename is part of reproducibility.
+- Events follow schema v1 (`events.py`); each event carries a `prev_hash`
+  chained from `GENESIS` (an integrity signal, not tamper-proof).
+- Standalone JSONL traces (`tracer.py`) use one envelope per line with sorted
+  keys: `event_id` (gapless), `prev_hash`, `ts_virtual` (monotonic), `run_id`,
+  `scenario`, `step`, `tool`, `args`, `outcome`, `latency`, `injector_event`,
+  `policy_decision`, `detail`. `outcome` is one of `success`, `timeout`,
+  `error`, `blocked`, `info`. `detail` is capped at 64 KB with a truncation
+  marker. Field-level detail is in docs 06 and 07.
+- Redaction runs at write time (doc 11 section 6).
+- Policies use `policy/v1`; patches use `policy_patch/v1` (RFC 7396 merge
+  patch). Schemas are bundled in `src/agentcrash/schemas/`.
+- Tool names in docs and tests are neutral: `payments.charge`, `crm.update`,
+  `kv`. Do not add domain-specific names or vocabulary to `src/`.
 
 ## 6. Determinism rules (non-negotiable)
 
-1. Never read wall-clock time inside tools, injector, or verifiers. All time
-   comes from the virtual clock (clock_ms), advanced only by the runner.
-2. Always thread the seed: every randomized choice takes seed from the run
-   config. Same scenario plus same seed must yield byte-identical traces.
-3. Tools are pure functions of args, seed, and clock_ms plus explicit store
-   state. No network, no filesystem writes, no model calls inside tools.
-4. The fault program is declarative data in scenario.yaml, not inline code in
-   the runner. A new fault means a new YAML block plus tests, not a branch.
-5. Flaky is failing: a test that passes on retry without a code change is a
-   bug in the harness, and it blocks the change report until fixed.
+1. Never read wall-clock time or use global `random` in deterministic modules.
+   `tests/test_acr001.py` (rule ACR001) fails the build on banned imports.
+   Use `VirtualClock` (`clock.py`) and the seed in `WorkflowConfig`.
+2. Same seed and same inputs must produce the same trace content and verdict.
+3. Faults are declarative data passed to `configure_faults`, not branches in
+   host or core code. A new fault kind means a new catalog entry plus tests.
+   Unknown fault kinds are refused. No fault has a default tool target.
+4. Verifiers are pure functions over trace plus optional state. No network,
+   no clock, no model calls.
+5. Flaky is failing. A test that passes on retry without a code change is a
+   harness bug and blocks the change.
 
-## 7. Verifier-before-diagnosis rule
+## 7. The domain-free guard test
 
-Model-generated diagnosis is strictly separated from deterministic
-verification. Concretely:
+`tests/test_generic_core.py` is the enforcement point for ADR-009. It:
 
-- Verifiers are pure Python over the trace plus final environment state. They
-  take no model output as input and make no model calls.
-- The diagnoser reads a failing trace and proposes a structured policy diff.
-  It never decides pass or fail, and its prose never appears in verdict output.
-- The check command must pass on golden traces with zero model access, which
-  is the offline gate. If check needs an API key, the design is wrong.
-- Review order for any failure fix: read the trace lines, read the verifier
-  finding, then read the diagnoser proposal. Never start from the proposal.
+- scans every `.py`, `.json`, `.html`, `.js`, `.css` file under
+  `src/agentcrash/` for banned domain vocabulary and fails with
+  `file:line` hits;
+- asserts no `FAULT_CATALOG` entry has a default `tool` param;
+- asserts faults target user-named tools and `concurrent_update` requires
+  `key` and `updates`;
+- asserts `FreshWriteOnly(tools=[...])` accepts user-named store tools;
+- asserts `fetch_live_patch` is opt-in (returns `None` with no base URL);
+- covers redaction of hash fields, thread-safe hash chains, and non-JSON
+  tool outputs.
 
-## 8. PR expectations
+If it fails, remove the vocabulary or move the code to the host. Do not edit
+the banned list to make it pass.
 
-- Scope: one scenario, one verifier, one policy knob, or one doc per change.
-  Mixed changes are split before review.
-- Every behavior change ships with unit tests for the new logic, one golden
-  trace update if verdicts change, and a docs touch-up if user-visible.
-- Every PR reports the pytest result, the ruff result, the seed-matrix result
-  for touched scenarios (see doc 10), and the exact replay command plus the
-  outcome for policy changes.
-- Phase gating only: PRs reference milestones (M1, M2, M3), never calendar
-  dates. There is no day-wise timeline anywhere in planning or reporting.
+## 8. Verifier-before-diagnosis rule
 
-## 9. Common pitfalls
+- Verifiers take no model output as input and make no model calls.
+- A model may only propose a `policy_patch/v1` document through
+  `fetch_live_patch` (opt-in via `AGENTCRASH_LLM_BASE_URL` and
+  `AGENTCRASH_LLM_API_KEY`, any OpenAI-compatible `/chat/completions`). It
+  fails closed, and its prose never appears in verdict output.
+- `check` must work with zero model access. If it needs a key, the design is
+  wrong.
+- Review order for a failure: read the trace, read the verifier evidence,
+  then read any proposed patch. Never start from the proposal.
+
+## 9. PR expectations
+
+- Scope: one fault, one verifier, one policy knob, one SDK change, or one doc.
+- Every behavior change ships with tests and a docs touch-up if user-visible.
+- Report the four gate results from section 4.1. For perf-sensitive changes
+  also run `.\.venv\Scripts\python bench/run_overhead.py` and compare with
+  `docs/phase7-evidence/bench.json`.
+- Reference milestones (M0-M3, ADR-006) and roadmap items (R1-R7), never
+  calendar dates.
+
+## 10. Common pitfalls
 
 | Pitfall | Why it hurts | Correct pattern |
 |---|---|---|
-| Blind retry on TIMEOUT | Unknown outcome becomes a double charge | Status read first, then retry with the same idempotency key |
-| New idempotency key per retry | Dedup window misses, side effect repeats | Generate the key once per user intent, reuse across retries |
-| Wall-clock timeout in tools | Runs stop reproducing across machines | Virtual clock plus seeded latency only |
-| Diagnoser verdict in output | Non-deterministic pass or fail | Diagnoser emits policy diffs only; verifiers own verdicts |
-| Acting on doc instructions | Poisoned doc becomes remote control | Treat retrieved text as data; confirmation gate for side effects |
-| Reading stale state after write | Concurrent update silently lost | Versioned reads; re-read before mutating writes |
-| Committing traces to git | Repo bloat plus PII risk | Gitignore traces dir, keep curated goldens in tests golden |
-| Secrets in policy or trace | Key leak through logs | Env vars only; redaction pass before persistence (see doc 11) |
+| Blind retry after a timeout | Unknown outcome becomes a duplicate effect | Read status first, or retry with the same idempotency key |
+| New idempotency key per retry | Dedup misses, side effect repeats | One key per user intent, reused across retries |
+| Wall-clock time in deterministic code | Runs stop reproducing; ACR001 fails | `VirtualClock` plus seed |
+| Model text in verdict output | Non-deterministic pass or fail | Models propose patches only; invariants own verdicts |
+| Reading stale state after a write | Lost update goes unnoticed | Versioned reads; `NoLostUpdate` / `FreshWriteOnly` |
+| `maybe_fault` boundary name differs from `configure_faults` key | Fault never fires | Use the identical string in both places |
+| `fault_injection=False` (default) | Faults silently off | Set `fault_injection=True` in `WorkflowConfig` |
+| Launching `agentcrash.exe` on a Smart App Control machine | Blocked unsigned launcher | `python -m agentcrash` |
+| Committing trace files or `reports/` | Repo bloat plus PII risk | They are gitignored; keep curated fixtures synthetic |
+| Secrets in code, traces, or policies | Key leak | Env vars only; redaction at write time (doc 11) |
 
-## 10. Open Questions
+## 11. Open Questions
 
 | Question | Owner | Notes |
 |---|---|---|
-| Typer versus argparse for the CLI | Tech lead | Decide at M0; keep flags identical either way |
-| Golden trace update review process | Tech lead | Proposal: golden diffs need one reviewer plus offline check proof |
+| Host-supplied runner contract for diagnose and replay | Tech lead | Roadmap R6; do not implement before owner `go` |
+| Framework adapter packaging (extras vs separate packages) | Tech lead | Roadmap R1 |

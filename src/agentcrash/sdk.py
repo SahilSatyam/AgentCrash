@@ -21,16 +21,23 @@ import functools
 import hashlib
 import json
 import os
-import queue
 import threading
 import urllib.request
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Self
 from uuid import uuid4
 
-from agentcrash.events import make_event, validate_event
+from agentcrash.events import make_event
 from agentcrash.tracer import redact
+
+#: Built once: ``json.dumps(..., sort_keys=True)`` builds a new encoder per
+#: call. Same output format, so existing chains still verify.
+#: ``default=str`` keeps non-JSON host values (objects, datetimes) from
+#: ever raising into host code.
+_HASH_ENCODER = json.JSONEncoder(sort_keys=True, check_circular=False, default=str)
+GENESIS = "GENESIS"
 
 
 @dataclass
@@ -52,7 +59,7 @@ class FaultPolicy:
     """Deterministic fault decisions for named boundaries.
 
     ``faults`` maps boundary name -> fault descriptor, e.g.
-    ``{"save_odrl": {"kind": "timeout_after_commit"}}``. Decisions are
+    ``{"payments.charge": {"kind": "timeout_after_commit"}}``. Decisions are
     seeded and reproducible; faults only fire when the SDK was created
     with ``fault_injection=True``.
     """
@@ -82,30 +89,28 @@ class _Exporter:
 
     def __init__(self, config: WorkflowConfig) -> None:
         self._config = config
-        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=config.max_queue)
+        # ``max_queue <= 0`` means unbounded (same as ``queue.Queue``).
+        self._max = config.max_queue if config.max_queue > 0 else None
+        self._buf: deque[dict[str, Any]] = deque()
+        self._lock = threading.Lock()
         self.dropped = 0
         self.sent = 0
         self.failed = 0
-        self._seen_ids: set[str] = set()
 
     def emit(self, event: dict[str, Any]) -> bool:
-        """Enqueue; False when dropped (full) — never raises, never blocks."""
-        if event.get("event_id") in self._seen_ids:
-            return True  # idempotent: already captured
-        try:
-            self._queue.put_nowait(event)
-        except queue.Full:
-            try:
-                self._queue.get_nowait()
-            except queue.Empty:
-                pass
-            self.dropped += 1
-            try:
-                self._queue.put_nowait(event)
-            except queue.Full:
-                return False
-        self._seen_ids.add(event["event_id"])
-        if self._config.endpoint and self._queue.qsize() >= self.BATCH_SIZE:
+        """Enqueue, dropping the oldest when full; never raises, never blocks.
+
+        Duplicate ``event_id`` values are not filtered here (the SDK never
+        emits one twice, and the server dedupes on ingestion), so memory
+        stays bounded by ``max_queue``.
+        """
+        with self._lock:
+            if self._max is not None and len(self._buf) >= self._max:
+                self._buf.popleft()
+                self.dropped += 1
+            self._buf.append(event)
+            flush_now = bool(self._config.endpoint) and len(self._buf) >= self.BATCH_SIZE
+        if flush_now:
             self._flush_best_effort()
         return True
 
@@ -120,24 +125,18 @@ class _Exporter:
 
     def drain(self) -> list[dict[str, Any]]:
         """Remove and return all buffered events (local capture path)."""
-        items: list[dict[str, Any]] = []
-        try:
-            while True:
-                items.append(self._queue.get_nowait())
-        except queue.Empty:
-            pass
+        with self._lock:
+            items = list(self._buf)
+            self._buf.clear()
         return items
 
     def _flush_best_effort(self) -> None:
         endpoint = self._config.endpoint
         if not endpoint:
             return
-        batch: list[dict[str, Any]] = []
-        try:
-            while len(batch) < 50:
-                batch.append(self._queue.get_nowait())
-        except queue.Empty:
-            pass
+        with self._lock:
+            n = min(self.BATCH_SIZE, len(self._buf))
+            batch = [self._buf.popleft() for _ in range(n)]
         if not batch:
             return
         try:
@@ -154,11 +153,12 @@ class _Exporter:
         # Best-effort flush: network failures are counted, never raised.
         except Exception:  # noqa: BLE001 -- graceful degradation by design
             self.failed += len(batch)
-            for event in batch:  # requeue best-effort
-                try:
-                    self._queue.put_nowait(event)
-                except queue.Full:
-                    self.dropped += 1
+            with self._lock:  # requeue at the front, in order, best-effort
+                for event in reversed(batch):
+                    if self._max is not None and len(self._buf) >= self._max:
+                        self.dropped += 1
+                        continue
+                    self._buf.appendleft(event)
 
 
 class _StepContext:
@@ -209,6 +209,11 @@ class RunContext:
         self.name = name
         self.run_id = f"run_{uuid4().hex[:12]}"
         self.faults_fired: list[dict[str, Any]] = []
+        self._calls: dict[str, int] = {}
+        # Per-run chain: each run's trace verifies on its own
+        # (seq starts at 1, prev_hash starts at GENESIS).
+        self._seq = 0
+        self._prev_hash = GENESIS
 
     def __enter__(self) -> Self:
         self._sdk._record(self, kind="run_start", status="ok")
@@ -224,9 +229,17 @@ class RunContext:
         """Open a child step context manager."""
         return _StepContext(self, name)
 
-    def maybe_fault(self, boundary: str) -> dict[str, Any] | None:
-        """Deterministic fault hook; records injections as events."""
-        fault = self._sdk.faults.should_fire(boundary) if self._sdk.faults else None
+    def maybe_fault(self, boundary: str, call_index: int | None = None) -> dict[str, Any] | None:
+        """Deterministic fault hook; records injections as events.
+
+        Each call counts as one call of ``boundary`` in this run, so a fault
+        with ``occurrence: N`` fires on exactly the Nth call. Pass
+        ``call_index`` to supply your own count instead.
+        """
+        if call_index is None:
+            call_index = self._calls.get(boundary, 0) + 1
+            self._calls[boundary] = call_index
+        fault = self._sdk.faults.should_fire(boundary, call_index) if self._sdk.faults else None
         if fault is None or not self._sdk._faults_enabled():
             return None
         self.faults_fired.append({"boundary": boundary, **fault})
@@ -243,8 +256,6 @@ class AgentCrash:
             self.config.enabled = False
         self.faults = FaultPolicy(seed=self.config.seed)
         self.exporter = _Exporter(self.config)
-        self._seq = 0
-        self._prev_hash = "GENESIS"
         self._lock = threading.Lock()
         self.traces: dict[str, list[dict[str, Any]]] = {}
 
@@ -320,8 +331,41 @@ class AgentCrash:
         if not self._active():
             return None
         with self._lock:
-            self._seq += 1
-            seq = self._seq
+            event = self._record_locked(
+                run,
+                kind=kind,
+                step=step,
+                status=status,
+                tool=tool,
+                inputs=inputs,
+                outputs=outputs,
+                error=error,
+                fault=fault,
+            )
+        # Outside the lock: a batch flush may touch the network.
+        self.exporter.emit(event)
+        return event
+
+    def _record_locked(
+        self,
+        run: RunContext,
+        *,
+        kind: str,
+        step: str | None,
+        status: str,
+        tool: str | None,
+        inputs: Any,
+        outputs: Any,
+        error: str | None,
+        fault: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Build, chain and capture one event (caller holds ``self._lock``).
+
+        Sequence number and ``prev_hash`` advance together under the lock,
+        so concurrent steps can never fork the chain.
+        """
+        run._seq += 1
+        seq = run._seq
         event = make_event(
             event_id=f"evt_{run.run_id}_{seq:04d}",
             run_id=run.run_id,
@@ -332,21 +376,66 @@ class AgentCrash:
             status=status,
             seq=seq,
             tool=tool,
-            inputs=redact(inputs or {}),
-            outputs=redact(outputs or {}),
+            inputs=redact(inputs) if inputs else {},
+            outputs=redact(outputs) if outputs else {},
             error=error,
             fault=fault,
         )
-        problems = validate_event(event)
-        assert not problems, f"SDK emitted invalid event: {problems}"
-        line = json.dumps(event, sort_keys=True)
-        digest = hashlib.sha256(f"{self._prev_hash}:{line}".encode()).hexdigest()
-        self._prev_hash = digest
+        # No per-event validate_event(): make_event builds valid events by
+        # construction (pinned by tests), and the server re-validates every
+        # event on ingestion. This keeps the hot path cheap.
+        line = _HASH_ENCODER.encode(event)
+        digest = _chain_hash(run._prev_hash, line)
+        run._prev_hash = digest
         event["prev_hash"] = digest
         self.traces.setdefault(run.run_id, []).append(event)
-        self.exporter.emit(event)
         return event
 
     def trace(self, run_id: str) -> list[dict[str, Any]]:
         """Return captured events for a run (local capture path)."""
         return list(self.traces.get(run_id, []))
+
+
+def _chain_hash(prev: str, line: str) -> str:
+    return hashlib.sha256(f"{prev}:{line}".encode()).hexdigest()
+
+
+def verify_sdk_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verify one run's SDK events on their own.
+
+    Checks, in ``seq`` order: a single ``run_id``, gapless ``seq`` from 1,
+    and the ``prev_hash`` chain, where each event's ``prev_hash`` is
+    ``sha256(<previous value>:<canonical JSON of the event without
+    prev_hash>)`` starting from ``GENESIS``. Works on events loaded from
+    JSONL. Returns ``{"ok": True, "first_bad": None, "reason": None,
+    "events": n}`` or names the first bad event.
+
+    Integrity signal for accidental loss or reordering, not tamper proof:
+    there is no signing key.
+    """
+    if not events:
+        return {"ok": False, "first_bad": None, "reason": "no events", "events": 0}
+    run_ids = {event.get("run_id") for event in events}
+    if len(run_ids) != 1:
+        return {
+            "ok": False,
+            "first_bad": None,
+            "reason": f"trace mixes {len(run_ids)} runs; verify one run at a time",
+            "events": len(events),
+        }
+    prev = GENESIS
+    ordered = sorted(events, key=lambda e: e.get("seq") if isinstance(e.get("seq"), int) else -1)
+    for expected, event in enumerate(ordered, start=1):
+        event_id = event.get("event_id")
+        if event.get("seq") != expected:
+            return {"ok": False, "first_bad": event_id, "reason": "seq gap", "events": len(events)}
+        body = {key: value for key, value in event.items() if key != "prev_hash"}
+        prev = _chain_hash(prev, _HASH_ENCODER.encode(body))
+        if event.get("prev_hash") != prev:
+            return {
+                "ok": False,
+                "first_bad": event_id,
+                "reason": "prev_hash mismatch",
+                "events": len(events),
+            }
+    return {"ok": True, "first_bad": None, "reason": None, "events": len(events)}

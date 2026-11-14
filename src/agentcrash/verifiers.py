@@ -3,10 +3,10 @@
 Core keeps only the checks that need no domain stack: the verifier
 registry (re-exported from :mod:`agentcrash._registry`), the generic
 write-freshness and lost-update invariants, and the trace/state loading
-plus ``run_verifiers`` helpers. ODRL-specific invariants live in the
-host/extension package (``odrl_agent.verifiers``), which imports
-:exc:`VerifierError`, :class:`FreshWriteOnly` and :class:`NoLostUpdate`
-from here. Core never imports ODRL/SHACL/DSPy stacks.
+plus ``run_verifiers`` helpers. Domain-specific invariants live in host
+or plugin packages, which import :exc:`VerifierError` and the base
+checks from here and register their own ids. Core imports no domain
+stack.
 
 Rules: verifiers read only the trace events and the state snapshot — no
 network, no wall-clock, no model calls. A violated invariant becomes
@@ -32,12 +32,7 @@ from agentcrash._registry import (
     verifier_ids,
 )
 
-#: Tool name for ODRL saves, kept as a plain string so the generic
-#: freshness check covers versioned ODRL writes without importing them.
-SAVE_ODRL = "save_odrl"
-
 __all__ = [
-    "SAVE_ODRL",
     "FreshWriteOnly",
     "NoLostUpdate",
     "TraceCorruptError",
@@ -50,106 +45,184 @@ __all__ = [
     "load_trace_events",
     "register_verifier",
     "run_verifiers",
+    "tool_results",
     "verifier_ids",
 ]
 
 
-def _mutating_calls(trace: list[dict[str, Any]], tool: str) -> list[dict[str, Any]]:
-    """Return executed (non-error) ``tool`` results from the trace."""
+def _events(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not isinstance(trace, list):
         raise VerifierError(f"trace must be a list of events, got {type(trace).__name__}")
-    calls: list[dict[str, Any]] = []
     for event in trace:
         if not isinstance(event, dict):
             raise VerifierError("trace contains a non-object event")
-        if event.get("tool") != tool:
-            continue
-        if event.get("detail", {}).get("phase") != "tool_result":
-            continue
-        if event.get("outcome") == "error":
-            continue
-        calls.append(event)
+    return trace
+
+
+def _is_sdk_event(event: dict[str, Any]) -> bool:
+    """SDK events (``events.py``) carry ``kind`` + ``seq``; envelopes do not."""
+    return "kind" in event and "seq" in event
+
+
+def _step_label(event: dict[str, Any]) -> Any:
+    """Evidence label: SDK ``seq`` (unique, ordered) or envelope ``step``."""
+    if _is_sdk_event(event):
+        return f"seq {event.get('seq')} ({event.get('step')})"
+    return event.get("step")
+
+
+def tool_results(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize executed tool calls from either trace format.
+
+    Returns ``{"label", "tool", "op", "expected_version", "conflict"}`` per
+    successful call:
+
+    - ``TraceWriter`` envelope: ``detail.phase == "tool_result"`` and
+      ``outcome != "error"``; ``op`` from ``args``; versions from
+      ``detail.data``.
+    - SDK event: ``kind == "tool"`` and ``status == "ok"``; ``op`` from
+      ``inputs``; ``expected_version`` from ``inputs`` (else ``outputs``);
+      the conflict flag from ``outputs.version_conflict`` or
+      ``outputs.conflict`` (what :meth:`Ledger.kv_write` returns).
+    """
+    calls: list[dict[str, Any]] = []
+    for event in _events(trace):
+        if _is_sdk_event(event):
+            if event.get("kind") != "tool" or event.get("status") != "ok":
+                continue
+            inputs = event.get("inputs") or {}
+            outputs = event.get("outputs") or {}
+            expected = inputs.get("expected_version", outputs.get("expected_version"))
+            conflict = outputs.get("version_conflict", outputs.get("conflict"))
+            op = inputs.get("op")
+        else:
+            if (event.get("detail") or {}).get("phase") != "tool_result":
+                continue
+            if event.get("outcome") == "error":
+                continue
+            data = (event.get("detail") or {}).get("data") or {}
+            expected = data.get("expected_version")
+            conflict = data.get("version_conflict")
+            op = (event.get("args") or {}).get("op")
+        calls.append(
+            {
+                "label": _step_label(event),
+                "tool": event.get("tool"),
+                "op": op,
+                "expected_version": expected,
+                "conflict": conflict,
+            }
+        )
     return calls
 
 
 class FreshWriteOnly:
-    """Every mutating write carries a freshness proof.
+    """Every write to a versioned store carries a freshness proof.
 
-    A ``key_value_store`` or ``save_odrl`` write passes only when its
-    ``expected_version`` matched the store version (``version_conflict``
-    false). Stale or version-less writes fail, even though the store
-    commits them.
+    A call to one of ``tools`` counts as a write when its ``op`` is
+    ``"write"``, or when it has no ``op`` at all (a dedicated write tool).
+    A write passes only when it sent an ``expected_version`` and the store
+    reported no version conflict. Stale or version-less writes fail, even
+    though the store commits them. Works on SDK traces and ``TraceWriter``
+    envelopes (see :func:`tool_results`).
+
+    ``tools`` defaults to ``("key_value_store",)``. On the CLI, name your
+    own: ``--invariant fresh_write_only:orders_db,crm.update``.
     """
 
     id = "fresh_write_only"
 
-    #: Versioned-store tools whose writes need a freshness proof.
-    VERSIONED_TOOLS = ("key_value_store", SAVE_ODRL)
+    #: Default versioned-store tools whose writes need a freshness proof.
+    VERSIONED_TOOLS: tuple[str, ...] = ("key_value_store",)
+
+    def __init__(
+        self, tools: tuple[str, ...] | list[str] | None = None, *, id: str | None = None
+    ) -> None:
+        if tools is not None:
+            self.VERSIONED_TOOLS = tuple(tools)
+        if id is not None:
+            self.id = id
 
     def check(self, trace: list[dict[str, Any]], state: dict[str, Any]) -> Verdict:
         del state
-        writes: list[dict[str, Any]] = []
-        for tool in self.VERSIONED_TOOLS:
-            writes.extend(
-                event
-                for event in _mutating_calls(trace, tool)
-                if (event.get("args") or {}).get("op") == "write"
+        writes = [
+            call
+            for call in tool_results(trace)
+            if call["tool"] in self.VERSIONED_TOOLS and call["op"] in (None, "write")
+        ]
+        tools = ", ".join(self.VERSIONED_TOOLS)
+        if not writes:
+            return Verdict(
+                self.id, True, f"no writes to [{tools}] in trace; nothing to judge (vacuous)"
             )
-        stale = sorted(
-            event.get("step")
-            for event in writes
-            if (event.get("detail") or {}).get("data", {}).get("version_conflict") is True
-            or (event.get("detail") or {}).get("data", {}).get("expected_version") is None
-        )
+        stale = [
+            call["label"]
+            for call in writes
+            if call["conflict"] is True or call["expected_version"] is None
+        ]
         if not stale:
             return Verdict(self.id, True, f"{len(writes)} write(s) carried the fresh version")
-        return Verdict(
-            self.id,
-            False,
-            f"stale write(s) without freshness proof at steps {stale}",
-        )
+        return Verdict(self.id, False, f"stale write(s) without freshness proof at {stale}")
 
 
 class NoLostUpdate:
     """The final state keeps every concurrent update.
 
-    For each ``concurrent_update`` injector event, every applied field
-    must still hold the rival value in the final snapshot. Traces without
-    a concurrent writer pass vacuously.
+    Rival writes come from ``concurrent_update`` faults in either format:
+    an envelope ``injector_event`` (``fault``, ``record``, ``updates``) or
+    an SDK ``fault`` event whose descriptor has ``kind``, ``key`` (or
+    ``record``) and ``updates``. Every rival field must still hold the
+    rival value in ``state["record_versions"]`` (an ``env_state/v1``
+    snapshot, e.g. :meth:`Ledger.snapshot`).
+
+    Traces without a rival writer pass vacuously. A trace with a rival
+    writer but no ``record_versions`` in the state raises
+    :exc:`VerifierError`: it cannot be judged, so it is never a PASS.
     """
 
     id = "no_lost_update"
 
+    @staticmethod
+    def _rival(event: dict[str, Any]) -> dict[str, Any] | None:
+        if _is_sdk_event(event):
+            fault = event.get("fault") if event.get("kind") == "fault" else None
+            if isinstance(fault, dict) and fault.get("kind") == "concurrent_update":
+                return {"record": fault.get("key", fault.get("record")), **fault}
+            return None
+        injector = event.get("injector_event") or {}
+        if injector.get("fault") == "concurrent_update":
+            return injector
+        return None
+
     def check(self, trace: list[dict[str, Any]], state: dict[str, Any]) -> Verdict:
-        if not isinstance(trace, list):
-            raise VerifierError(f"trace must be a list of events, got {type(trace).__name__}")
+        events = _events(trace)
         if not isinstance(state, dict):
             raise VerifierError(f"state must be an object, got {type(state).__name__}")
+        rivals = [(event, rival) for event in events if (rival := self._rival(event))]
+        if not rivals:
+            return Verdict(self.id, True, "no concurrent writer in trace; nothing to preserve")
+        if not isinstance(state.get("record_versions"), list):
+            raise VerifierError(
+                "no_lost_update needs a state snapshot with 'record_versions' "
+                "(pass --state); the trace has a concurrent writer"
+            )
         final = {
             rec.get("record"): rec.get("value", {})
-            for rec in state.get("record_versions", [])
+            for rec in state["record_versions"]
             if isinstance(rec, dict)
         }
         lost: list[str] = []
-        rivals = 0
-        for event in trace:
-            injector = event.get("injector_event") or {}
-            if injector.get("fault") != "concurrent_update":
-                continue
-            rivals += 1
-            record = injector.get("record")
-            updates = injector.get("updates") or {}
+        for event, rival in rivals:
+            record = rival.get("record")
             current = final.get(record, {})
-            for field, want in updates.items():
+            for field, want in (rival.get("updates") or {}).items():
                 if not isinstance(current, dict) or current.get(field) != want:
-                    lost.append(
-                        f"step {event.get('step')}: {record}.{field} " f"(rival {want!r} lost)"
-                    )
-        if not rivals:
-            return Verdict(self.id, True, "no concurrent writer in trace; nothing to preserve")
+                    lost.append(f"{_step_label(event)}: {record}.{field} (rival {want!r} lost)")
         if not lost:
-            return Verdict(self.id, True, "final state preserves all rival update(s)")
-        return Verdict(self.id, False, "; ".join(sorted(lost)))
+            return Verdict(
+                self.id, True, f"final state preserves all {len(rivals)} rival update(s)"
+            )
+        return Verdict(self.id, False, "; ".join(lost))
 
 
 def run_verifiers(

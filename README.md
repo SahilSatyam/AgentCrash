@@ -1,156 +1,140 @@
-# AgentCrash — reliability framework for agentic workflows
+# AgentCrash — chaos engineering for AI agents
 
 [![CI](https://github.com/SahilSatyam/AgentCrash/actions/workflows/ci.yml/badge.svg)](https://github.com/SahilSatyam/AgentCrash/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentcrash-core.svg)](https://pypi.org/project/agentcrash-core/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Your agents already do the work. AgentCrash makes them **prove it** — SDK
-instrumentation, hash-chained event traces, deterministic fault
-injection, and a fail-closed verifier that judges every run against
-recorded evidence. The model can suggest a fix; only the trace decides
-whether it passes.
+Most agent evals grade the final answer. A tool-using agent can give a
+correct-looking answer while it charges a customer twice, acts on stale
+data, or follows instructions hidden in a document. AgentCrash tests the
+**path**: it breaks your agent's tools on purpose, records every step in
+a hash-chained trace, and judges the trace with deterministic invariants.
+A model may suggest a fix. Only the trace decides whether it passes.
+
+It works with any agentic workflow: plain Python, LangGraph, OpenAI
+Agents SDK, CrewAI, MCP tools. You wrap the tool boundary; AgentCrash
+never runs your agent for you.
 
 ```bash
 pip install agentcrash-core
 ```
 
+## 60-second example
+
 ```python
-from agentcrash import AgentCrash, WorkflowConfig
+from agentcrash import AgentCrash, DuplicateMutatingEffect, WorkflowConfig, evaluate_trace
 
-ac = AgentCrash(WorkflowConfig(project="my-workflow", fault_injection=True))
+ac = AgentCrash(WorkflowConfig(project="checkout-agent", fault_injection=True, seed=42))
+# The first call to payments.charge commits, then reports a timeout.
+ac.configure_faults({"payments.charge": {"kind": "timeout_after_commit", "occurrence": 1}})
 
-with ac.run(name="my-run") as run:
-    with run.step("my-step"):
-        ...  # your business logic — AgentCrash never orchestrates it
+def charge(order_id: str) -> dict:
+    return {"charged": order_id}  # your real side effect
+
+with ac.run(name="checkout") as run, run.step("charge") as step:
+    result = charge("o-1")
+    fault = run.maybe_fault("payments.charge")
+    step.record_tool("payments.charge", inputs={"order": "o-1"}, outputs=result)
+    if fault:  # a naive agent sees TIMEOUT and blindly retries
+        step.record_tool("payments.charge", inputs={"order": "o-1"}, outputs=charge("o-1"))
+
+report = evaluate_trace(ac.trace(run.run_id), [DuplicateMutatingEffect()], run_id=run.run_id)
+print(report["verdict"])                 # FAIL
+print(report["results"][0]["evidence"])  # duplicate effect(s): payments.charge at steps ...
 ```
 
-```bash
-agentcrash check --trace run.jsonl --invariant required_step:my-step \
-  --report-out verdict.json
-# verdict.json: PASS or FAIL, with the evidence cited
-```
+Fix the retry (check status first, or send an idempotency key), run it
+again, and the same invariant passes.
 
-## Why AgentCrash
+## What you get
 
-- **Verification, not vibes.** Every run emits a versioned event
-  trace. `check` replays registry invariants against that trace —
-  no LLM-as-judge, no flaky assertions.
-- **Never owns your workflow.** The SDK observes: buffered export,
-  bounded memory, network failures swallowed and counted. Your code
-  keeps working with the framework installed, disabled
-  (`AGENTCRASH_DISABLED=1`), or absent.
-- **Breaks things on purpose.** Fault policies inject timeouts,
-  poisoned reads, and concurrent writes so your retry and reconcile
-  logic is tested — not hoped for.
-- **Diagnose → patch → replay.** A failing trace maps to a
-  reference policy patch (fixture-backed, or model-proposed when you
-  opt in); replay the same trace under the patch and watch it pass.
+| Part | What it does |
+|---|---|
+| SDK (`AgentCrash`) | `run` / `step` / `record_tool` / `maybe_fault`; sync and async; no-op when `AGENTCRASH_DISABLED=1` |
+| Fault injection | Seeded and reproducible; fires on tool + op + Nth call. Kinds: `timeout_after_commit`, `timeout_before_commit`, `concurrent_update`, `poisoned_doc` |
+| Traces | Versioned events, `prev_hash` chain, secrets and PII redacted at write time |
+| Invariants | Pure `(trace, state) -> Verdict`; built-ins `required_step:<step>`, `duplicate_mutating_effect`, `fresh_write_only:<tools>`, `no_lost_update`; register your own |
+| `agentcrash check` | Judge a JSONL trace; JSON output, exit codes, `--plugin` for your invariants, `--verify-chain`, `--scan-pii` |
+| Recovery policy | `policy/v1` YAML + RFC 7396 merge patches; optional model-proposed patches, schema-gated |
+| Control plane | `agentcrash serve`: `/v1` API, idempotent ingestion, Lab UI, bearer auth, retention |
 
 ## How it fits together
 
 ```mermaid
 flowchart LR
-    H[Host workflow] --> SDK[AgentCrash SDK<br/>buffered hash-chained events]
+    H[Your agent] -->|tool calls| SDK[AgentCrash SDK]
+    F[Fault policy<br/>seeded] -.->|inject| SDK
+    SDK --> T[Hash-chained trace<br/>+ state snapshot]
     SDK -->|batch flush| S[Control plane<br/>agentcrash serve]
-    S --> Lab[Lab UI]
-    S --> API[v1 API<br/>runs events evaluations]
-    SDK --> T[trace JSONL<br/>+ state snapshot]
-    T --> C[agentcrash check<br/>registry + host invariants]
-    C --> V[verdict JSON<br/>PASS or FAIL]
-    F[FaultPolicy] -.->|inject| H
+    T --> C[Invariants<br/>no model in the loop]
+    C --> V[Verdict + evidence<br/>PASS / FAIL]
+    V -.->|optional| P[Policy patch<br/>model may propose]
+    P -.->|replay| H
 ```
 
-Core owns the framework (SDK, events, invariants, faults, server).
-Domain logic lives in host packages, which register their own
-invariants — e.g. the NL-to-ODRL agent in
-[`nl2odrl-responsible-ai`](https://github.com/SahilSatyam/nl2odrl-responsible-ai)
-adds `odrl_valid`, `exactly_once_save`, and `no_attacker_grant`
-alongside the generic checks (`required_step`, `duplicate_mutating_effect`,
-`fresh_write_only`, `no_lost_update`). Any agentic workflow can do the same.
+## Your own invariants
 
-## The reliability loop
+```python
+from agentcrash.verifiers import Verdict, register_verifier
 
-```mermaid
-sequenceDiagram
-    participant U as You
-    participant D as diagnose
-    participant M as Model (opt-in)
-    participant R as replay + check
-    U->>D: failing trace
-    alt LLAMA_BASE_URL is set
-        D->>M: trace + verdict summary
-        M-->>D: policy_patch document or fallback
-    else offline default
-        D-->>D: fixture reference patch
-    end
-    D->>R: replay same trace under patched policy
-    R-->>U: verdict PASS + regression report
+class NoRefundOverLimit:
+    id = "no_refund_over_limit"
+
+    def check(self, trace, state):
+        big = [e["step"] for e in trace
+               if e.get("tool") == "refund" and e.get("inputs", {}).get("amount", 0) > 500]
+        return Verdict(self.id, not big, f"refunds over limit at {big}" if big else "ok")
+
+register_verifier(NoRefundOverLimit())
+```
+
+```bash
+agentcrash check --trace run.jsonl --plugin my_agent.invariants \
+  --invariant no_refund_over_limit --format json --report-out verdict.json
 ```
 
 ## Install
 
 | You want | Command |
 |---|---|
-| SDK + control-plane client | `pip install agentcrash-core` |
-| Control-plane service (`serve`) | `pip install "agentcrash-core[server]"` |
-| Host-domain helpers (SHACL, DSPy, numpy) | `pip install "agentcrash-core[host-odrl]"` |
+| SDK + `check` | `pip install agentcrash-core` |
+| Control-plane service | `pip install "agentcrash-core[server]"` |
 | Contributors | `uv venv && uv pip install -e ".[dev]"` |
 
-Requirements: Python 3.11+, no API key for anything below (44-test
-suite runs fully offline).
+Python 3.11+. No API key needed; the whole test suite runs offline.
 
-## Use it
+On Windows with Smart App Control or WDAC, unsigned console-script
+launchers (`agentcrash.exe`, and any other pip/uv-installed `.exe`) may be
+blocked. Use `python -m agentcrash ...`, which is equivalent.
 
-**Judge a trace** — verify registry invariants against an SDK-schema
-JSONL trace, optionally with host plugins, state snapshot, and a PII
-leak scan:
-
-```bash
-agentcrash check --trace run.jsonl --state run.state.json \
-  --plugin my_agent.verifiers --invariant required_step:fetch \
-  --report-out verdict.json --format json --scan-pii
-```
-
-**Run the control plane** (Lab UI + `/v1` API, local only):
-
-```bash
-agentcrash serve --port 8901
-```
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/v1/projects` | POST | register a project |
-| `/v1/events` | POST | ingest versioned events (idempotent on `event_id`) |
-| `/v1/runs`, `/v1/runs/{id}` | GET | list / inspect runs |
-| `/v1/evaluations` | POST | submit an evaluation |
-| `/v1/runs/{id}/evaluation` | GET | read a run evaluation |
-| `/v1/admin/prune` | POST | prune retained runs |
+Upgrading from 0.2? See [CHANGELOG.md](CHANGELOG.md) for the migration table.
 
 ## Configuration
 
 | Variable | Effect |
 |---|---|
 | `AGENTCRASH_DISABLED=1` | Every SDK call becomes a no-op passthrough |
-| `AGENTCRASH_API_TOKENS` | Comma-separated bearer tokens required on every `/v1/*` call; empty (default) = loopback mode, all local traffic accepted |
-| `LLAMA_BASE_URL` | Opt-in live diagnosis: failing traces are sent to an OpenAI-compatible `{base}/chat/completions` endpoint for a candidate patch; unset = fixture fallback |
-| `LLAMA_API_KEY` | Bearer header for the live call above — header only, never logged or traced |
+| `AGENTCRASH_API_TOKENS` | Comma-separated bearer tokens required on `/v1/*`; empty = loopback mode |
+| `AGENTCRASH_LLM_BASE_URL` | Opt-in: send failing traces to an OpenAI-compatible `/chat/completions` endpoint for a candidate policy patch |
+| `AGENTCRASH_LLM_API_KEY` | Bearer token for that call; sent as a header only, never traced |
+
+`LLAMA_BASE_URL` / `LLAMA_API_KEY` still work as fallbacks.
 
 ## Develop
 
 ```bash
 git clone https://github.com/SahilSatyam/AgentCrash.git && cd AgentCrash
 uv venv && uv pip install -e ".[dev]"
-pytest -q   # 44 tests, offline
+pytest -q && ruff check . && black --check .
 ```
 
 ## Layout
 
-- `src/agentcrash/` — `sdk`, `events`, `invariants`, `evaluate`,
-  `server`, `verifiers` (registry + generic checks), `tracer`,
-  `clock`, `injector`, `ledger`, `policy`, `scan_pii`, `db`,
-  `lab/` (control-plane UI assets), `schemas/` (bundled policy schemas)
-- `examples/minimal_agent/` — second-app sample with zero domain imports
-- `examples/README.md` — writing your own host
-- `docs/` — start with
-  [`docs/architecture-decoupling.md`](docs/architecture-decoupling.md),
-  which defines the core/host boundary
+- `src/agentcrash/`: `sdk`, `events`, `injector`, `tracer`, `clock`,
+  `invariants`, `verifiers`, `evaluate`, `policy`, `ledger`, `server`,
+  `cli`, `scan_pii`, `lab/`, `schemas/`
+- `examples/`: reference integrations (`minimal_agent/`)
+- `docs/`: [overview](docs/overview.md), [setup](docs/setup.md),
+  [architecture](docs/architecture-decoupling.md),
+  [roadmap](docs/plans/2026-11-14-sota-roadmap.md)

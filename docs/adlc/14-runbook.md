@@ -1,228 +1,214 @@
-# 14 — Runbook (Demo-Day + Operator Guide)
+# 14 - Runbook (Demo and Operator Guide)
 
-**Status:** Approved · **Owner:** Tech lead (demo captain) · **Milestone:** M0 Prototype
-**Lens:** ADLC startup runbook — one page to prepare, one loop to demo, one table to
+**Status:** Revised for 0.3.0 · **Owner:** Tech lead (demo captain) · **Milestone:** M0 Baseline
+**Lens:** ADLC startup runbook: one page to prepare, one loop to demo, one table to
 survive surprises. No day-wise timeline; readiness is gated by rehearsal count.
 
 ## 1. Service overview
 
 | Item | Value |
 |---|---|
-| Service | AgentCrash prototype CLI (`agentcrash run / check / diagnose / replay`) |
-| Runtime | Python 3.11+, WSL Ubuntu-24.04, repo at `/home/sahil/AgentCrash` |
-| Model | Meta Llama via API adapter; offline fallback `--model fake` for rehearsals |
-| Evidence | JSONL traces in `traces/` (one file per run, `latest.jsonl` symlinked) |
-| Policy file | `policy/base.yaml` (+ diagnoser patches as `policy_patch.json`) |
-| Scenario (v0) | `timeout_retry`: ambiguous timeout on `charge_card`, invoice #9821, $150 |
-| Escalation | Tech lead (demo captain) → backend engineer (harness) → product lead (narrative) |
-| Logs | Console output + `traces/*.jsonl` + `traces/run-manifest.log` |
+| Product | `agentcrash-core` 0.3.0 (import `agentcrash`), chaos engineering for tool-using agents |
+| CLI | `check` and `serve` only; run as `python -m agentcrash` |
+| Runtime | Python 3.11+, Windows PowerShell, `uv`-managed venv at `.venv` |
+| Model | None needed. The demo loop, `check`, and the test suite are offline |
+| Evidence | Trace file written by the host script (`run.jsonl` in the guide); verdict reports under `reports\` |
+| Control plane | `python -m agentcrash serve` (Lab UI + `/v1` API), loopback only by default |
+| Demo scenario | Checkout example from `docs/setup.md` section 3: `timeout_after_commit` on `payments.charge`, then a blind retry |
+| Logs | Console output, `reports\*.verdict.json`, and the trace file |
+| Escalation | Tech lead (demo captain), then whoever owns the touched module (section 10) |
 
-## 2. Setup (do once per machine, rehearse twice before demo day)
+## 2. Setup (once per machine; rehearse twice before a demo)
 
-```bash
-# 1. Enter WSL and the repo
-wsl -d Ubuntu-24.04 -- bash -lc 'cd /home/sahil/AgentCrash && pwd'
-
-# 2. Environment (inside WSL; uv-managed venv)
-uv venv && source .venv/bin/activate
+```powershell
+# 1. Repo and environment
+cd C:\Dev\Projects\AgentCrash
+uv venv
 uv pip install -e ".[dev]"
 
-# 3. Model credentials (live demo only; fakes need nothing)
-export LLAMA_API_KEY="..." LLAMA_BASE_URL="https://api.llama.example/v1"
+# 2. Smoke test: expect every test to pass
+.\.venv\Scripts\python -m pytest -q
 
-# 4. Smoke test — must print PASS lines and a trace file
-python -m agentcrash run --scenario timeout_retry --model fake
-python -m agentcrash check --trace traces/latest.jsonl
-ls -la traces/   # expect <timestamp>.jsonl + latest.jsonl
+# 3. Confirm the CLI
+.\.venv\Scripts\python -m agentcrash --version      # agentcrash 0.3.0
 ```
 
-Readiness gate: two consecutive clean rehearsals (one `fake`, one live model if the
-venue has network). If the live rehearsal fails, demo on `fake` — decide before doors
-open, not on stage.
+No key or token is required. Use `.\.venv\Scripts\python -m agentcrash ...` for every
+command (see the Smart App Control note in section 7).
 
-## 3. Run the first scenario (the 2-minute demo loop)
+## 3. The demo loop (about 5 minutes)
 
-Narrate while typing. The story: the agent looks successful but double-charged.
+The story: an agent charges an order. The first `payments.charge` call commits, then
+reports a timeout (`timeout_after_commit`). A naive agent retries blindly and charges
+twice. The checker catches it; a fixed agent reads status first and passes.
 
-```bash
-# Step 1 — Run: agent attempts the payment under injected chaos
-python -m agentcrash run --scenario timeout_retry --model llama-3.3-70b
-# Expected: run completes, agent reports PAID. Trace lands in traces/<ts>.jsonl.
+1. Create `checkout.py` from `docs/setup.md` section 3, step 1. Run from an empty
+   working directory so `reports\` and `run.jsonl` land there.
+2. Run the naive agent and judge it:
 
-# Step 2 — Check: deterministic verifiers grade the path, not the answer
-python -m agentcrash check --trace traces/latest.jsonl
+```powershell
+python checkout.py
+python -m agentcrash check --trace run.jsonl `
+  --invariant duplicate_mutating_effect --invariant required_step:charge
 ```
 
-Expected `check` output for the unpatched policy (the money moment):
+Expected (exit code 1):
 
 ```text
-[FAIL] Invariant 'exactly_once_mutation' violated!
-  - Step 3: charge_card(invoice_id=9821, amount=150) -> TIMEOUT (outcome ambiguous)
-  - Step 4: charge_card(invoice_id=9821, amount=150) -> SUCCESS
-  - Error: 2 charges registered for invoice #9821 (double charge detected)
-[PASS] Invariant 'task_completion': invoice #9821 status == PAID
-Verdict: FAIL (1 passed, 1 failed) — see traces/latest.jsonl seq 3-4
+charges: 2
+[FAIL] Invariant duplicate_mutating_effect violated! (duplicate effect(s): payments.charge at steps charge and charge)
+[PASS] Invariant required_step:charge satisfied (step 'charge' present (4 event(s)))
+verdict=FAIL report=reports\run_<id>.verdict.json
 ```
+
+3. Fix the recovery logic (read status before acting again) and re-judge:
+
+```powershell
+python checkout.py --fixed
+python -m agentcrash check --trace run.jsonl `
+  --invariant duplicate_mutating_effect --invariant required_step:charge
+```
+
+Expected (exit code 0):
+
+```text
+charges: 1
+[PASS] Invariant duplicate_mutating_effect satisfied (no duplicate mutating tool effects)
+[PASS] Invariant required_step:charge satisfied (step 'charge' present (4 event(s)))
+verdict=PASS report=reports\run_<id>.verdict.json
+```
+
+Check the exit code right after `check` with `$LASTEXITCODE`. Here `python` means
+`<repo>\.venv\Scripts\python`.
+
+Talking points: the final answer looks fine in both runs; the checker grades the path,
+not the answer. A passing verdict comes from deterministic invariants, never from a model.
 
 ## 4. Interpret `check` output
 
-| Output | Meaning | Next step |
+| Line or code | Meaning | Action |
 |---|---|---|
-| All `[PASS]`, `Verdict: PASS` | Path respected every invariant | Collect the trace (§6), move to regression or close |
-| `[FAIL] exactly_once_mutation` | Retry after ambiguous timeout duplicated the side effect | Diagnose (§5) — this is the v0 demo failure |
-| `[FAIL] task_completion` | Agent never reached PAID (over-conservative policy or agent bug) | Inspect trace `tool_result` outcomes; check policy `max_retries` is not 0 |
-| `ERROR: trace validation failed` | Trace does not match schema v1 | Do not diagnose; fix the tracer first (see troubleshooting) |
-| `WARN: unknown policy version` | Trace policy differs from local `policy/base.yaml` | Note the version; replay with the matching policy file |
+| `[PASS] Invariant <id> satisfied (...)` | Invariant held on this trace | None |
+| `[FAIL] Invariant <id> violated! (...)` | Invariant broken; the parenthesis is the evidence | Open the trace, find the named steps |
+| `verdict=PASS|FAIL report=...` | Overall verdict and the report path | Keep the report with the trace |
+| Exit 0 | PASS | |
+| Exit 1 | FAIL, or a PII leak under `--scan-pii` | Read the evidence |
+| Exit 2 | Usage or config error (`E_CONFIG`): unknown invariant, missing trace, no `--invariant` given | Fix the command |
+| Exit 3 | Corrupt trace (`E_TRACE_CORRUPT`) | Regenerate the trace |
 
-Reading a trace directly (when the audience asks "prove it"):
+Useful variants:
 
-```bash
-python -c "import json; [print(json.loads(l)['seq'], json.loads(l)['event_type'], json.loads(l).get('tool'), json.loads(l).get('outcome')) for l in open('traces/latest.jsonl')]"
-# Expect: seq 3 tool_result charge_card TIMEOUT_AMBIGUOUS, seq 4 tool_result charge_card SUCCESS
+```powershell
+# Machine-readable verdict (prose goes to stderr)
+python -m agentcrash check --trace run.jsonl --invariant duplicate_mutating_effect --format json
+
+# Host-defined invariants
+python -m agentcrash check --trace run.jsonl --plugin my_agent.invariants --invariant my_check
+
+# PII and secret-shape guardrail (non-zero exit on a hit)
+python -m agentcrash check --trace run.jsonl --invariant required_step:charge --scan-pii
 ```
 
-## 5. Diagnose, then replay (close the loop on stage)
+Built-in invariant ids: `duplicate_mutating_effect`, `fresh_write_only`,
+`no_lost_update`, `required_step:<name>`.
 
-```bash
-# Step 3 — Diagnose: LLM proposes a POLICY-ONLY patch (never touches verdicts)
-python -m agentcrash diagnose --trace traces/latest.jsonl --output policy_patch.json
-cat policy_patch.json
-# Expect: {"rule": "on_tool_timeout", "tool": "charge_card",
-#          "action": "check_transaction_status", "retry_with_idempotency_key": true}
+## 5. Control plane (optional demo segment)
 
-# Step 4 — Review the exact diff before applying (never skip on stage)
-python -m agentcrash policy diff --base policy/base.yaml --patch policy_patch.json
-
-# Step 5 — Replay: re-run with the patched policy, plus the regression suite
-python -m agentcrash replay --trace traces/latest.jsonl --policy policy_patch.json
+```powershell
+python -m agentcrash serve --port 8901
+# Lab UI: http://127.0.0.1:8901/
 ```
 
-Expected `replay` output:
+Bind stays on `127.0.0.1` by default. To require a token, set the allowlist before
+starting, then pass the same value as `api_key` in the host's `WorkflowConfig`:
 
-```text
-[PASS] exactly_once_mutation: charge_card executed once (idempotency key inv-9821-a3f)
-[PASS] task_completion: invoice #9821 PAID
-Regression: 1/1 prior scenarios still green
-Verdict: FIX CONFIRMED — patch resolves the violation with no regressions
+```powershell
+$env:AGENTCRASH_API_TOKENS = "demo-token"
+python -m agentcrash serve --port 8901
 ```
 
-If replay reports `FIX REJECTED` (still failing) or a regression, say so plainly, keep
-the trace, and fall back to the pre-recorded golden trace (§7). Never re-run diagnose
-in a loop on stage — one attempt, then the golden backup.
+Retention: `POST /v1/admin/prune` with `project` and `keep_last_n` and/or
+`older_than_days`. Hosts feed events to `/v1/events` through the SDK `endpoint` setting;
+ingestion is idempotent on `event_id`.
 
-## 5B. Journey 5 — ODRL convert encore (S4 dry run, no model key)
+## 6. Collect evidence
 
-The S4 encore reuses the same loop for a model-free policy conversion:
-the scripted converter runs `parse_policy → validate_odrl → save_odrl`
-into a versioned store, and `--model` is ignored (fake adapter, offline).
-Unaided dry run — all three fault variants, nothing written:
+After any rehearsal or demo, keep for each run:
 
-```bash
-# Step J5-1 — Dry-run the clean variant (sloppy parse, invalid ODRL saved)
-python -m agentcrash run --scenario odrl_convert --dry-run
-# Expect: tools parse_policy, validate_odrl, save_odrl; faults: [];
-#         "--model llama-3.3-70b ignored for odrl_convert (scripted converter)"
+1. The trace file (for example `run.jsonl`) and the matching `reports\run_<id>.verdict.json`.
+2. The exact commands and exit codes, copied from the console.
+3. For perf claims, `.\.venv\Scripts\python bench/run_overhead.py` output compared with
+   `docs/phase7-evidence/bench.json` (about 5.7% overhead, ~114 us per step, trace ~38 KB
+   for 100 steps).
 
-# Step J5-2 — Dry-run the poisoned-sentence variant (attacker grant planted)
-python -m agentcrash run --scenario odrl_convert_poisoned --dry-run
-# Expect: faults list the inert poisoned_doc entry for parse_policy
+Do not commit traces or `reports\`; both are gitignored. Run `--scan-pii` before sharing a
+trace outside the team.
 
-# Step J5-3 — Dry-run the concurrent-edit variant (rival writer at step 4)
-python -m agentcrash run --scenario odrl_convert_concurrent --dry-run
-# Expect: faults list the concurrent_update entry on save_odrl at step 4
-```
+## 7. Troubleshooting
 
-Live encore (still no key — the converter never calls a model):
-
-```bash
-# Step J5-4 — Run clean pre-fix, then grade it
-python -m agentcrash run --scenario odrl_convert --seed 42
-python -m agentcrash check --trace traces/<run_id>.jsonl
-# Expect: [FAIL] odrl_valid (permission[0] is missing required 'target');
-#         the other three S4 verifiers PASS
-
-# Step J5-5 — Diagnose and replay with the fixed converter policy
-python -m agentcrash diagnose --trace traces/<run_id>.jsonl --output s4-patch.json
-python -m agentcrash replay --trace traces/<run_id>.jsonl \
-  --policy policies/fixed-odrl-convert.yaml
-# Expect: fix: VERIFIED (all four S4 verifiers PASS)
-```
-
-Pinned goldens for all three variants (naive FAIL + fixed PASS at seed 42)
-live in `tests/corpus/s4-*-seed42.jsonl` with labels in
-`tests/corpus/labels.yaml`. They are deliberately NOT in `traces/golden/`:
-that directory is replay's live `--regression` input, and pre-fix S4 traces
-re-run under non-S4 policies would red-flag the S1–S3 regression gates.
-
-## 6. Collect traces (evidence discipline)
-
-```bash
-mkdir -p demo-evidence && cp traces/latest.jsonl demo-evidence/demo-<n>.jsonl
-python -m agentcrash check --trace demo-evidence/demo-<n>.jsonl | tee demo-evidence/demo-<n>. verdict.txt
-```
-
-Keep per run: the trace, the verdict text, the policy file + patch, and the model name.
-Name files `demo-01-pre-fix.jsonl`, `demo-02-post-fix.jsonl`, … so the story reads in
-order. Traces are append-only: never edit a collected trace; annotate beside it.
-
-## 7. Troubleshooting table (when the demo fights back)
-
-| Symptom | Likely cause | First response (under 60 seconds) |
+| Symptom | Likely cause | Fix |
 |---|---|---|
-| `run` hangs with no output | Live model unreachable (no network / bad key) | Abort; re-run with `--model fake`; continue the story on the fake adapter |
-| `TIMEOUT` never fires; check PASSES pre-fix | Wrong scenario flag or injector seed overridden | Verify `--scenario timeout_retry`; confirm seed line in `run_start` event |
-| `check` always FAILs even post-fix | Stale policy: replay used `base.yaml` not the patch | Re-run replay with `--policy policy_patch.json`; show the `policy diff` |
-| `diagnose` proposes retries without idempotency key | Model ignored schema hint | Reject the patch (schema validation will); re-run diagnose once, else use golden patch |
-| `trace validation failed` on a fresh run | Code changed event fields without a schema bump | Stop; this is a real bug — switch to golden traces, file an issue with the trace |
-| Double charge shows 3+ charges, not 2 | `max_retries` > 1 with no idempotency gate | Point it out as campaign evidence (retries multiply harm); use golden trace |
-| Venue has no network at all | Credentials or connectivity dead | Full `fake`-adapter demo; state this openly — determinism makes it honest |
-| Llama gives a different agent path each run | Model sampling nondeterminism | Expected: verdicts are deterministic over whatever path occurred; re-run `check` live to prove it |
+| `agentcrash.exe` blocked, or Code Integrity event 3077 in Event Viewer | Windows Smart App Control or WDAC blocks the unsigned console-script launcher | Use `python -m agentcrash` (equivalent). Do not turn Smart App Control off for this: Windows cannot turn it back on without a reset |
+| `E_CONFIG: unknown invariant '...'` (exit 2) | Id is not built in | Use a built-in id, or add `--plugin <module>` that registers it |
+| `E_CONFIG: no invariants: pass at least one --invariant <id>` (exit 2) | `check` needs at least one `--invariant` | Add one |
+| `E_CONFIG: trace file not found` (exit 2) | Wrong path or the host script did not write the trace | Run the host script first; check the working directory |
+| `E_TRACE_CORRUPT` (exit 3) | Truncated or hand-edited trace | Regenerate it; for hash-chained files use `verify_chain` from `agentcrash.tracer` to find the first bad link |
+| Fault never fires | `fault_injection` is off, or boundary names differ | Set `WorkflowConfig(fault_injection=True)`; make the `configure_faults` key and the `maybe_fault` argument identical |
+| SDK records nothing | `AGENTCRASH_DISABLED=1` is set | Clear it: `Remove-Item Env:AGENTCRASH_DISABLED` |
+| `401` from `/v1/*` | `AGENTCRASH_API_TOKENS` is set | Send the token as `api_key` in `WorkflowConfig`, or unset the variable on the server |
+| Export seems lost | Bounded drop-oldest queue, or dead `endpoint` (best-effort flush, never raises) | Raise `max_queue`; check the `endpoint` URL and that `serve` is running |
+| Port already in use | Another `serve` is running | `python -m agentcrash serve --port <other>` |
+| `pytest` reports failures | Local edit, or a stale checkout | `git status`; `git diff`; rerun on a clean tree |
+| `duplicate_mutating_effect` fails after a fix | Retry still calls the mutating tool without status read or idempotency key | Read status first, or reuse one idempotency key per intent |
 
-Golden backups (prepare before demo day, store in `demo-evidence/golden/`):
+## 8. Rollback (a change broke the demo or the suite)
 
-- `golden-pre-fix.jsonl` — known FAIL trace (double charge, seq 3–4).
-- `golden-post-fix.jsonl` — known PASS replay trace with the canonical patch.
-- `golden-patch.json` — the canonical `policy_patch.json` above.
-- Rehearse presenting from goldens once, so the fallback feels practiced, not panicked.
+```powershell
+# 1. Freeze evidence: keep the broken trace and report
+New-Item -ItemType Directory -Force demo-evidence | Out-Null
+Copy-Item run.jsonl demo-evidence\broken-run.jsonl
+Copy-Item reports -Destination demo-evidence\reports -Recurse
 
-## 8. Rollback (when a change breaks the demo or the suite)
+# 2. Find the last green commit; do not discard uncommitted work blindly
+git status
+git log --oneline -5
 
-Rollback trigger: any rehearsal where `check`/`replay` error (not FAIL, but ERROR), or
-where two consecutive runs with the same seed give different verdicts.
+# 3. Revert the offending commit (creates a new commit; history stays intact)
+git revert <bad-SHA>
 
-```bash
-# 1. Freeze: keep the broken trace, do not overwrite it
-cp traces/latest.jsonl demo-evidence/broken-<label>.jsonl
-# 2. Roll code back to the last green commit (policy files are compatible in-milestone)
-git stash -u && git log --oneline -5   # identify last green SHA
-git checkout <last-green-SHA>
-# 3. Re-verify the gate
-python -m agentcrash run --scenario timeout_retry --model fake
-python -m agentcrash check --trace traces/latest.jsonl
-# 4. If green, demo from this commit; file the regression with the broken trace attached
+# 4. Re-verify the gates
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m black --check .
+.\.venv\Scripts\python -m pytest -q
 ```
 
-Data compatibility: traces are versioned (`schema_version`); a code rollback never
-invalidates already-collected traces within the same schema version. Policy patches
-reference `base_policy` explicitly, so a rolled-back policy file is detected, not
-silently misapplied.
+To demo from a known-good commit without altering your branch, use a separate worktree:
+
+```powershell
+git worktree add ..\AgentCrash-green <last-green-SHA>
+```
+
+Data compatibility: events and policies are versioned (`v1`), so a code rollback inside
+the same schema version does not invalidate collected traces. Rolling back a release:
+re-tag the previous green commit and cut a patch release (doc 13, section 8).
 
 ## 9. After the demo (15 minutes, demo captain owns it)
 
-1. Archive `demo-evidence/` with that session's traces, verdicts, policy files, and the
-   model name(s) used.
-2. Log costs: model calls, approximate tokens, and any live-model spend vs. budget.
-3. File follow-ups: every surprise from §7 becomes an issue with its trace attached.
-4. Confirm the next milestone gate in doc 15 — demos move M-gates, never calendar days.
+1. Archive `demo-evidence\` with the traces, reports, and the commands used.
+2. Record anything that surprised you as an issue with its trace attached.
+3. Confirm the next milestone gate in doc 13 and the roadmap items in doc 15. Demos move
+   M-gates, never calendar days.
 
 ## 10. Operator contacts and escalation
 
 | Role | Owns | Escalate when |
 |---|---|---|
-| Demo captain (tech lead) | Narrative, go/no-go on live vs. fake | Any ERROR-class failure in final rehearsal |
-| Backend engineer | Harness, tracer, replay correctness | Nondeterministic verdicts or schema errors |
-| Product lead | Story, costs, follow-up issues | Budget overrun or scope question from the audience |
+| Demo captain (tech lead) | Narrative, go/no-go | Any failing gate in final rehearsal |
+| Backend engineer | SDK, tracer, control plane | Non-deterministic verdicts, chain or schema errors |
+| Product lead | Story, scope | Scope question from the audience |
 
-**Open Question (owner: tech lead, resolves by M3):** hosted shareable demo vs. local
-laptop demo — if hosted, this runbook gains a deploy/rollback section for the demo
-instance; until then, local-only is the supported path.
+Removed in 0.3.0 (ADR-009): the scenario runner, `diagnose` and `replay` commands, and
+the live-model demo. Host-supplied diagnose and replay return as roadmap item R6.
+
+**Open Question (owner: tech lead):** hosted shareable demo versus local-only. Until
+decided, local-only is the supported path.

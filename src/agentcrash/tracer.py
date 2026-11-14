@@ -9,6 +9,7 @@ no network, no model calls.
 from __future__ import annotations
 
 import fnmatch
+import functools
 import hashlib
 import json
 import re
@@ -29,16 +30,31 @@ _CARD_RE = re.compile(r"\b\d(?:[ \-]?\d){12,18}\b")
 OUTCOMES = {"success", "timeout", "error", "blocked", "info"}
 
 
+#: The glob patterns above, compiled once (``fnmatch`` per key was the
+#: tracer's main cost).
+_SENSITIVE_KEY_RE = re.compile(
+    "|".join(f"(?:{fnmatch.translate(pat)})" for pat in _SENSITIVE_PATTERNS)
+)
+_MIN_CARD_DIGITS = 13
+_DROP_DIGITS = str.maketrans("", "", "0123456789")
+
+
+@functools.lru_cache(maxsize=4096)
 def _is_sensitive_key(key: str) -> bool:
     if key in _EXEMPT_KEYS:
         return False
-    lowered = key.lower()
-    return any(fnmatch.fnmatchcase(lowered, pat) for pat in _SENSITIVE_PATTERNS)
+    return _SENSITIVE_KEY_RE.match(key.lower()) is not None
 
 
 def _scrub_str(value: str) -> str:
-    value = _EMAIL_RE.sub(REDACTED_EMAIL, value)
-    value = _CARD_RE.sub(REDACTED_CARD, value)
+    # Cheap prechecks skip both regexes for the common clean string.
+    if "@" in value:
+        value = _EMAIL_RE.sub(REDACTED_EMAIL, value)
+    if (
+        len(value) >= _MIN_CARD_DIGITS
+        and len(value) - len(value.translate(_DROP_DIGITS)) >= _MIN_CARD_DIGITS
+    ):
+        value = _CARD_RE.sub(REDACTED_CARD, value)
     return value
 
 
@@ -50,15 +66,15 @@ def redact(obj: Any) -> Any:
     email shapes and card-like digit runs inside strings are replaced with
     fixed synthetic constants.
     """
-    if isinstance(obj, dict):
-        out: dict[str, Any] = {}
-        for key, value in obj.items():
-            if isinstance(key, str) and _is_sensitive_key(key):
-                out[key] = REDACTED
-            else:
-                out[key] = redact(value)
-        return out
-    if isinstance(obj, list):
+    kind = type(obj)
+    if kind is str:
+        return _scrub_str(obj)
+    if kind is dict or isinstance(obj, dict):
+        return {
+            key: (REDACTED if isinstance(key, str) and _is_sensitive_key(key) else redact(value))
+            for key, value in obj.items()
+        }
+    if kind is list or isinstance(obj, list):
         return [redact(item) for item in obj]
     if isinstance(obj, str):
         return _scrub_str(obj)
@@ -124,6 +140,9 @@ class TraceWriter:
             raise ValueError("ts_virtual must be monotonic non-decreasing")
         self._t = ts_virtual
         self._seq += 1
+        # Only caller-supplied fields are redacted. Harness-owned fields
+        # (ids, hashes, counters) must never be rewritten: a hex hash with
+        # 13+ digits in a row would otherwise look like a card number.
         event: dict[str, Any] = {
             "event_id": f"evt_{self.run_id}_{self._seq:04d}",
             "prev_hash": self._prev_hash,
@@ -131,17 +150,20 @@ class TraceWriter:
             "run_id": self.run_id,
             "scenario": self.scenario,
             "step": step,
-            "tool": tool,
-            "args": args or {},
+            "tool": redact(tool),
+            "args": redact(args or {}),
             "outcome": outcome,
             "latency": latency,
-            "injector_event": injector_event,
-            "policy_decision": policy_decision,
-            "detail": detail if detail is not None else {},
+            "injector_event": redact(injector_event),
+            "policy_decision": redact(policy_decision),
+            "detail": redact(detail if detail is not None else {}),
         }
-        event = redact(event)
-        event["detail"] = _truncate_detail(event["detail"])
         line = _canonical(event)
+        # The detail is a slice of the line, so a small line needs no
+        # separate detail size check (saves one full serialization).
+        if len(line) > DETAIL_MAX_BYTES // 4 and len(line.encode("utf-8")) > DETAIL_MAX_BYTES:
+            event["detail"] = _truncate_detail(event["detail"])
+            line = _canonical(event)
         self._fh.write(line + "\n")
         self._fh.flush()
         self._prev_hash = hashlib.sha256(line.encode("utf-8")).hexdigest()

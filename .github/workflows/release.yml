@@ -1,0 +1,96 @@
+name: release
+
+# Publishes agentcrash-core to PyPI when a version tag is pushed:
+#   git tag v0.3.0 && git push origin v0.3.0
+# Uses PyPI trusted publishing (OIDC): no API token is stored in GitHub.
+# One-time setup (PyPI trusted publisher + GitHub environment "pypi") is in
+# docs/adlc/13-contributing-and-workflow.md, section 8.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gates:
+    name: Gates (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v5
+      - name: Install (with dev extras)
+        run: uv sync --extra dev
+      - name: Lint
+        run: uv run --no-sync ruff check .
+      - name: Format
+        run: uv run --no-sync black --check .
+      - name: Tests
+        run: uv run --no-sync pytest -q
+
+  build:
+    name: Build sdist + wheel
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Tag must match the package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pyproject=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          module=$(python -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('src/agentcrash/__init__.py').read()).group(1))")
+          echo "tag=$tag pyproject=$pyproject module=$module"
+          if [ "$tag" != "$pyproject" ] || [ "$tag" != "$module" ]; then
+            echo "::error::tag v$tag does not match pyproject ($pyproject) and __version__ ($module)"
+            exit 1
+          fi
+      - name: Build
+        run: |
+          uv build --out-dir dist
+          rm -f dist/.gitignore  # uv writes one; it is not a distribution
+          ls -l dist
+      - name: Check metadata
+        run: uvx twine check --strict dist/*.whl dist/*.tar.gz
+      - name: Smoke-test the wheel in a clean venv
+        run: |
+          uv venv --python 3.12 /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          /tmp/smoke/bin/python -m agentcrash --version
+          /tmp/smoke/bin/python -c "import agentcrash, sys; assert agentcrash.__version__ == '${GITHUB_REF_NAME#v}'; print('import ok')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/agentcrash-core/
+    permissions:
+      id-token: write  # OIDC token for PyPI trusted publishing; nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

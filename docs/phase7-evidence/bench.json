@@ -1,12 +1,18 @@
 {
-  "bare_s": 0.0134,
-  "harness_s": 0.0787,
-  "hundred_step_bytes": 40197,
-  "n_events": 2000,
-  "overhead_pass": false,
-  "overhead_ratio": 4.8553,
+  "bare_run_ms_median": 24.031,
+  "hundred_step_bytes": 37797,
+  "instrumented_run_ms_median": 25.402,
+  "overhead_pass": true,
+  "overhead_ratio": 0.057,
   "overhead_target": 0.1,
-  "repeats": 5,
+  "overhead_us_per_step": 114.2,
+  "runs": 30,
+  "sdk_us_per_event": 14.0,
+  "step_cost_ms": 2.0,
+  "steps": 12,
   "trace_size_pass": true,
-  "trace_size_target_bytes": 2097152
+  "trace_size_target_bytes": 2097152,
+  "tracer_pass": true,
+  "tracer_us_per_event": 30.7,
+  "tracer_us_target": 60.0
 }

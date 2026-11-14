@@ -1,6 +1,6 @@
 """Synthetic per-run store: versioned records plus retrieved-doc spans.
 
-Versioned records back ``key_value_store`` and ``save_odrl`` (seeded
+Versioned records back any synthetic versioned-store tool (seeded
 version 1; writes bump the version and flag stale ``expected_version``
 with ``conflict: True`` so verifiers can judge freshness). Determinism:
 integer versions, canonical JSON hashing; no wall-clock, no network,
@@ -68,7 +68,7 @@ class Ledger:
         return {"version_before": before, "version_after": record["version"]}
 
     def record_doc(self, doc_id: str, fixture: str, label: str) -> None:
-        """Remember one retrieved NL span for the state snapshot."""
+        """Remember one retrieved document span for the state snapshot."""
         self.doc_spans.append({"doc_id": doc_id, "fixture": fixture, "label": label})
 
     def snapshot(self, run_id: str) -> dict[str, Any]:

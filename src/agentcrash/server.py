@@ -185,9 +185,9 @@ def prune_runs(
     Order for keep-last-N is ingestion order. Removes the dropped runs'
     events and evaluations. ``keep_last_n`` must be a non-negative int
     (0 drops every run); ``older_than_days`` must be a non-negative
-    number of days (runs created before the cutoff are dropped, even
-    when ``keep_last_n`` would keep them). At least one criterion is
-    required.
+    number of days (runs created at or before the cutoff are dropped,
+    even when ``keep_last_n`` would keep them). At least one criterion
+    is required.
     """
     if keep_last_n is None and older_than_days is None:
         raise ValueError("prune_runs needs keep_last_n and/or older_than_days")
@@ -202,7 +202,7 @@ def prune_runs(
         ordered = [r for r in _STORE["runs"].values() if r.get("project") == project]
         drop_ids: set[str] = set()
         if older_than_days is not None:
-            drop_ids.update(r["run_id"] for r in ordered if r.get("created_at", 0) < cutoff)
+            drop_ids.update(r["run_id"] for r in ordered if r.get("created_at", 0) <= cutoff)
         survivors = [r["run_id"] for r in ordered if r["run_id"] not in drop_ids]
         if keep_last_n is not None:
             drop_ids.update(survivors[: max(0, len(survivors) - keep_last_n)])
@@ -233,6 +233,16 @@ def reliability_summary(project: str) -> dict[str, Any]:
         }
 
 
+def _run_row(run: dict[str, Any]) -> dict[str, Any]:
+    """Slim run summary shared by both servers' ``GET /v1/runs``."""
+    return {
+        "run_id": run["run_id"],
+        "project": run["project"],
+        "workflow": run["workflow"],
+        "events": len(run["events"]),
+    }
+
+
 class _Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload: Any) -> None:
         body = json.dumps(payload).encode()
@@ -254,6 +264,11 @@ class _Handler(BaseHTTPRequestHandler):
         """401 unless the credential check passes."""
         if _bearer_ok(self.headers.get("Authorization")):
             return True
+        # Drain the unread body first; replying early makes some TCP
+        # stacks (notably Windows) reset the connection mid-request.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
         self._send(401, {"error": "unauthorized"})
         return False
 
@@ -356,26 +371,19 @@ class _Handler(BaseHTTPRequestHandler):
                 runs = [
                     r for r in _STORE["runs"].values() if not project or r.get("project") == project
                 ]
-            self._send(
-                200,
-                {
-                    "runs": [
-                        {
-                            "run_id": r["run_id"],
-                            "project": r["project"],
-                            "workflow": r["workflow"],
-                            "events": len(r["events"]),
-                        }
-                        for r in runs
-                    ]
-                },
-            )
+            self._send(200, {"runs": [_run_row(r) for r in runs]})
         elif len(parts) == 3 and parts[:2] == ["v1", "runs"]:
             detail = run_detail(parts[2])
             if detail is None:
                 self._send(404, {"error": "run not found"})
             else:
                 self._send(200, detail)
+        elif len(parts) == 4 and parts[:2] == ["v1", "runs"] and parts[3] == "evaluation":
+            summary = evaluation_summary(parts[2])
+            if summary is None:
+                self._send(404, {"error": "no evaluation for run"})
+            else:
+                self._send(200, summary)
         elif len(parts) == 3 and parts[:2] == ["v1", "reliability"]:
             self._send(200, reliability_summary(parts[2]))
         else:
@@ -436,7 +444,7 @@ def create_fastapi_app() -> Any:
             runs = [
                 r for r in _STORE["runs"].values() if not project or r.get("project") == project
             ]
-        return {"runs": runs}
+        return {"runs": [_run_row(r) for r in runs]}
 
     @app.get("/v1/runs/{run_id}")
     def get_run(run_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -483,6 +491,13 @@ def create_fastapi_app() -> Any:
         if summary is None:
             raise HTTPException(404, "no evaluation for run")
         return summary
+
+    @app.get("/v1/reliability/{project}")
+    def get_reliability(
+        project: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        _fastapi_auth(authorization)
+        return reliability_summary(project)
 
     try:
         from fastapi.staticfiles import StaticFiles  # type: ignore
