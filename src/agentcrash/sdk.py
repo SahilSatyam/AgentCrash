@@ -208,6 +208,7 @@ class RunContext:
         self.name = name
         self.run_id = f"run_{uuid4().hex[:12]}"
         self.faults_fired: list[dict[str, Any]] = []
+        self._calls: dict[str, int] = {}
 
     def __enter__(self) -> Self:
         self._sdk._record(self, kind="run_start", status="ok")
@@ -223,9 +224,17 @@ class RunContext:
         """Open a child step context manager."""
         return _StepContext(self, name)
 
-    def maybe_fault(self, boundary: str) -> dict[str, Any] | None:
-        """Deterministic fault hook; records injections as events."""
-        fault = self._sdk.faults.should_fire(boundary) if self._sdk.faults else None
+    def maybe_fault(self, boundary: str, call_index: int | None = None) -> dict[str, Any] | None:
+        """Deterministic fault hook; records injections as events.
+
+        Each call counts as one call of ``boundary`` in this run, so a fault
+        with ``occurrence: N`` fires on exactly the Nth call. Pass
+        ``call_index`` to supply your own count instead.
+        """
+        if call_index is None:
+            call_index = self._calls.get(boundary, 0) + 1
+            self._calls[boundary] = call_index
+        fault = self._sdk.faults.should_fire(boundary, call_index) if self._sdk.faults else None
         if fault is None or not self._sdk._faults_enabled():
             return None
         self.faults_fired.append({"boundary": boundary, **fault})

@@ -1,182 +1,242 @@
 # 03 — Requirements and Software Requirements Specification (SRS)
 
-**Status:** Draft · **Owner:** Founder (scope sign-off; see OQ-01) · **Phase gate:** M0 (Prototype v0) entry
+**Status:** Current for `agentcrash-core` 0.3.0 · **Owner:** Founder (scope sign-off) · **Milestone scheme:** M0–M3 (ADR-006)
 
-> ADLC lens: this SRS scopes the smallest shippable chaos harness a two-person startup can build,
-> demo, and sell to agent teams. No corporate bureaucracy: every requirement below is testable in
-> one command and traces to a prototype slice (v0 = ambiguous timeout, exactly-once).
-> No day-wise timeline is used anywhere; gating is by phase and milestone exit criteria.
+> ADLC lens: the SRS describes what the shipped package does today, and every requirement is
+> testable in one command. A requirement names the test that proves it. "Gap" means no test
+> exists yet; gaps are listed in §7 and mapped to roadmap items. No day-wise timeline is used;
+> gating is by milestone exit criteria.
 
 ## 1. System purpose and users
 
 ### 1.1 Purpose
 
-AgentCrash is chaos engineering for tool-using AI agents. It answers one question agent evals
-cannot: *did the agent's path to the answer respect safety and correctness invariants when the
-world misbehaved?* The pipeline is Run → Inject → Trace → Check → Diagnose & Replay.
+AgentCrash is chaos engineering for tool-using AI agents, shipped as the PyPI package
+`agentcrash-core` (import name `agentcrash`, MIT, Python 3.11+, runtime deps `pyyaml` and
+`jsonschema`; extras `server` = fastapi + uvicorn, and `dev`). It answers one question agent
+evals cannot: *did the agent's path to the answer respect safety and correctness invariants
+when the world misbehaved?*
 
-Prototype slice v0 covers exactly one chaos scenario: an **ambiguous tool timeout** on a
-side-effecting call (e.g. `charge_card`), verified against an **exactly-once** invariant, with
-CLI commands `run` / `check` / `diagnose` / `replay`. Python 3.11+, Meta Llama adapter.
+It is framework-neutral. The host owns the agent loop (plain Python, LangGraph, OpenAI Agents
+SDK, CrewAI, MCP). AgentCrash observes it, injects faults at named tool boundaries, and judges
+the resulting trace. Hard rule: deterministic invariants own verdicts; a model may only
+PROPOSE policy patches, and every patch is schema-gated.
+
+The core is domain-free (ADR-009). `tests/test_generic_core.py` fails if domain vocabulary
+enters `src/`. Earlier prototype scope (scenario runner, stub agent, `run` / `diagnose` /
+`replay` commands, payment scenarios, golden suite, model adapter) was removed in 0.3.0; see
+ADR-009 and `CHANGELOG.md`.
 
 ### 1.2 System boundary
 
-In scope (v0):
+In scope (0.3.0):
 
-- Agent Adapter (ReAct loop over Meta Llama API), Synthetic Tools (seeded, virtual clock),
-  Fault Injector (ambiguous-timeout script), Tracer (JSONL), Verifiers (deterministic
-  invariants), Policy Engine (YAML/JSON retry + idempotency + confirmation), Diagnoser
-  (LLM proposes policy diffs only), Replay Runner, CLI, pass/fail report.
-- Scenario pack v0: `timeout_retry` (pay vendor $150, invoice #9821) plus one happy-path
-  control scenario with no fault injected.
+| Component | Module | Role |
+|---|---|---|
+| SDK | `sdk.py`, `events.py` | Capture runs, steps, tool calls, faults as v1 events; export best-effort |
+| Fault injector | `injector.py` | Fault catalog, parameter validation, trigger matching |
+| Tracer | `tracer.py`, `clock.py` | Standalone JSONL writer, redaction, hash chain, `verify_chain`, `VirtualClock` |
+| Invariants | `invariants.py`, `verifiers.py`, `_registry.py`, `evaluate.py` | Verdicts, registry, report comparison |
+| Policy | `policy.py`, `schemas/` | `policy/v1`, `policy_patch/v1`, merge, diff, opt-in live proposer |
+| Ledger | `ledger.py` | Synthetic versioned store, a test double |
+| Control plane | `server.py`, `lab/` | `/v1` ingestion + query API, retention, Lab UI |
+| CLI | `cli.py` | `check`, `serve`, `--version` only |
 
-Out of scope (v0, deferred to later phases): poisoned-document and stale-read scenarios and
-their verifiers, multi-model comparison dashboard, hosted SaaS, human-approval UX beyond a CLI
-confirmation gate flag, automatic policy application without human review.
+Out of scope (0.3.0): running the host's agent, replaying it, and diagnosing from the CLI.
+These return as a host-supplied runner under roadmap R6. Also out: framework adapters (R1),
+new fault kinds (R2), more invariants (R3), reliability sweeps (R4), OpenTelemetry export
+(R5), hosted SaaS, tamper-proof traces (the hash chain is an integrity signal only).
 
 ### 1.3 User classes
 
-| Class | Goal | Technical level |
+| Class | Goal | Interface |
 |---|---|---|
-| UC-1 Agent developer (primary) | Reproduce a double-charge bug, apply a policy patch, prove the fix | Runs CLI, reads JSONL |
-| UC-2 Startup founder / demo lead | Show violation → patch → green replay in under 5 minutes | Runs 4 CLI commands |
-| UC-3 Regression CI job (headless) | Fail the build on invariant violation or task non-completion | Parses exit codes + JSON report |
+| UC-1 Agent developer (primary) | Instrument a workflow, inject a fault, see which invariant breaks | SDK + `agentcrash check` |
+| UC-2 CI job (headless) | Fail the build on a violated invariant or a PII leak | `check` exit codes + JSON report |
+| UC-3 Team lead / reviewer | Browse runs, verdicts and reliability per project | `agentcrash serve` Lab UI + `/v1` API |
 
 ### 1.4 Operating environment
 
-- Python 3.11+ on Linux/macOS (Windows via WSL); no GPU required for the harness itself.
-- Meta Llama model access via API adapter (key in env var, never in traces).
-- Local filesystem for scenarios, policies, traces; no network services required except the
-  model endpoint. Deterministic runs must also pass fully offline with a scripted stub agent.
+- Python 3.11, 3.12, 3.13 (CI matrix in `.github/workflows/ci.yml`, ubuntu-latest). Developed on Windows 11.
+- All tests are offline. No network, GPU or model is needed for the core.
+- On Windows with Smart App Control, prefer `python -m agentcrash` over the console script; both run the same `main()`.
 
-## 2. Functional requirements (FR-01 … FR-25)
+## 2. Functional requirements
 
-Convention: each requirement carries Priority (P0 = v0 gate, P1 = v0 stretch) and a
-Given/When/Then acceptance criterion executed via CLI or script. Scenario fixture used
-throughout: `scenarios/timeout_retry/scenario.yaml` (task "Pay vendor $150 for invoice #9821",
-tool `charge_card(invoice_id, amount)`, injector drops the first call's response after
-committing the side effect, seed `42`, virtual-clock timeout `2000 ms`).
+Convention: Priority P0 = required for 0.3.0, P1 = should have. Acceptance is Given/When/Then.
+"Proof" names the test file (and test) that exercises it; `gap` means no automated test yet.
+Neutral example tools: `payments.charge`, `crm.update`, a `kv` store.
 
-### 2.1 Run (agent execution in synthetic env)
+### 2.1 SDK capture
 
-| ID | Description | Priority | Acceptance criteria |
-|---|---|---|---|
-| FR-01 | Run a scenario by name with a chosen model adapter and seed, executing the ReAct loop against synthetic tools. | P0 | Given `scenario.yaml` + seed 42, when `agentcrash run --scenario timeout_retry --model llama-3.3-70b --seed 42` executes, then exit code is 0, a trace file `traces/<run_id>.jsonl` is created, and stdout prints run_id, seed, and scenario hash. |
-| FR-02 | Enforce a per-tool virtual-clock deadline so a hung tool yields a TIMEOUT event instead of blocking the run. | P0 | Given tool deadline `timeout_ms: 2000`, when `charge_card` exceeds it on the virtual clock, then the trace contains `tool_timeout` with `timed_out_ms: 2000` and the run continues to the agent's next step within 5 s wall-clock. |
-| FR-03 | Support a deterministic stub agent (scripted action list, no LLM call) for offline reproduction. | P0 | Given `--agent stub --stub-plan retry_immediately`, when run executes offline (no API key), then the trace matches the golden file `tests/golden/timeout_retry_stub.jsonl` byte-for-byte except `run_id` and wall-clock fields. |
-| FR-04 | Cap run length with `max_steps` (default 12) and record `run_truncated` when hit. | P1 | Given `max_steps: 3` and a stub plan needing 5 steps, when run executes, then it stops after 3 agent steps and the trace ends with `run_truncated: true`. |
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-01 | `AgentCrash(WorkflowConfig(...))` records `run_start`, `step_start`, `tool`, `fault`, `step_end`, `run_end` events through `ac.run(name)`, `run.step(name)` and `step.record_tool(tool, inputs, outputs, status, error, fault)`. | P0 | **Given** an SDK with default config, **when** a run opens one step and closes, **then** `ac.trace(run_id)` lists `run_start, step_start, step_end, run_end` in order, each carrying the run's `run_id` and the configured `project`. | `tests/test_sdk.py::test_workflow_decorator_async_and_steps` |
+| FR-02 | `@ac.workflow(name)` traces a host function as one run, sync or async, and records its return value (truncated to 2000 chars) as a `result` event. Exceptions propagate to the host and are recorded as `run_end` with `status=error`. | P0 | **Given** a decorated function returning 42, **when** it is called, **then** the host gets 42, one trace exists, and its first and last kinds are `run_start` and `run_end`. | `tests/test_sdk.py::test_workflow_decorator_sync_captures_run`, `::test_workflow_decorator_async_and_steps` (error path: gap) |
+| FR-03 | `AGENTCRASH_DISABLED=1` or `WorkflowConfig(enabled=False)` makes every SDK call a no-op passthrough. | P0 | **Given** `AGENTCRASH_DISABLED=1`, **when** a run is opened and closed, **then** `ac.traces == {}` and the host code ran unchanged. | `tests/test_sdk.py::test_disabled_mode_passthrough` (`enabled=False` path: gap) |
+| FR-04 | With no `endpoint`, capture is local only and never blocks. | P0 | **Given** no endpoint, **when** a run completes, **then** events are available from `ac.trace(run_id)` and no network call is made. | `tests/test_sdk.py` (all offline tests) |
+| FR-05 | The export queue is bounded by `max_queue` (default 1000) and drops the OLDEST event when full, counting drops in `exporter.dropped`. `max_queue <= 0` means unbounded. | P0 | **Given** `max_queue=4`, **when** a run emits more than 4 events, **then** `exporter.dropped > 0`. | `tests/test_sdk.py::test_bounded_queue_drops_oldest` |
+| FR-06 | With an `endpoint`, events flush in batches of 50 or at run end (never per step) as `POST {endpoint}/v1/events` with `Authorization: Bearer <api_key>` when `api_key` is set. Failures are counted in `exporter.failed` and the batch is re-queued. Delivery is at-least-once. | P0 | **Given** an unreachable endpoint, **when** a run with one step finishes, **then** `exporter.failed == 0` before run end, `> 0` after it, `sent == 0`, and local capture is intact. | `tests/test_sdk.py::test_dead_endpoint_never_breaks_host` |
+| FR-07 | The SDK never raises into host code because of capture. Non-JSON values (objects, dates) are stringified for hashing. | P0 | **Given** a tool output containing a `datetime.date` and a custom object, **when** `record_tool` runs, **then** a `tool` event is captured and no exception escapes. | `tests/test_generic_core.py::test_sdk_accepts_non_json_tool_outputs`, `tests/test_sdk.py::test_dead_endpoint_never_breaks_host` |
+| FR-08 | Events follow versioned schema v1 (`schema_version`, `event_id`, `run_id`, `project`, `workflow`, `step`, `kind`, `status`, `seq`, plus `tool`, `inputs`, `outputs`, `error`, `fault`, `parent_step`). `validate_event` returns a list of problems; `seq` must be a positive int. | P0 | **Given** an event with a missing key or `schema_version != 1`, **when** `validate_event` runs, **then** it returns one problem per defect. The server applies it on ingestion (FR-37). | `tests/test_server_ingestion.py` (valid path); invalid path: gap |
 
-### 2.2 Inject (fault injection)
+### 2.2 Fault triggers
 
-| ID | Description | Priority | Acceptance criteria |
-|---|---|---|---|
-| FR-05 | Inject the v0 ambiguous timeout: commit the tool side effect server-side, then return TIMEOUT to the agent (outcome unknown to the agent). | P0 | Given seed 42, when run executes, then the environment ledger shows 1 charge committed while the agent-visible result for step 3 is `TIMEOUT`, i.e. ledger count (1) != agent-observed successes (0) at that step. |
-| FR-06 | Drive all injection decisions from the run seed (seeded PRNG); same seed + scenario replays the identical fault schedule. | P0 | Given two runs with `--seed 42`, when both traces are compared ignoring `run_id`/`wall_clock`, then fault event steps, types, and latencies are identical (diff is empty). |
-| FR-07 | Load fault parameters (target tool, step, timeout_ms, ambiguity mode) from `scenario.yaml`, rejecting unknown fault types with a clear error. | P0 | Given a scenario with `fault.type: alien_fault`, when run starts, then it exits non-zero within 2 s with `Unknown fault type 'alien_fault'` and creates no trace file. |
-| FR-08 | Reserve (but refuse to execute in v0) `poisoned_document` and `concurrent_update` fault types with an explicit unsupported error. | P1 | Given `fault.type: poisoned_document` on a v0 binary, when run starts, then it exits non-zero with `supported in phase 2` and lists the supported types. |
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-09 | The fault catalog (`injector.FAULT_CATALOG`) holds four kinds: `timeout_after_commit` (commit, then report TIMEOUT), `timeout_before_commit` (TIMEOUT, no commit), `concurrent_update` (rival write lands first; requires `key` and `updates`), `poisoned_doc` (inert marker; the fixture bytes carry the injection). | P0 | **Given** the catalog, **when** it is read, **then** exactly these four kinds exist and each has a `params_schema`. | `tests/test_generic_core.py::test_fault_catalog_targets_no_default_tool` |
+| FR-10 | No catalog entry targets a default tool. The user names the target tool through `params.tool`. | P0 | **Given** `validate_fault_entry("timeout_after_commit", {"tool": "payments.charge"})`, **then** the result has `params.tool == "payments.charge"` and `params.occurrence == 1`; **and** no `default_params` contains `tool`. | `tests/test_generic_core.py::test_fault_entry_targets_user_named_tool` |
+| FR-11 | `concurrent_update` without both `key` and `updates` is refused. | P0 | **Given** `{"tool": "kv"}` only, **when** validated, **then** `UnknownFaultError` says `missing required params: key, updates`. | `tests/test_generic_core.py::test_concurrent_update_requires_key_and_updates` |
+| FR-12 | Unknown fault kinds and unknown params are refused with `UnknownFaultError` that lists the known kinds. `FaultSchedule.from_scenario` refuses before any trace is written. | P0 | **Given** kind `alien_fault`, **when** validated, **then** `UnknownFaultError` is raised and its message names `timeout_after_commit` among the known kinds. | gap |
+| FR-13 | `FaultSchedule` matches a fault by `at_step` (1-based loop step) or, when `at_step` is null, by `params.tool` / `params.op` / `params.occurrence` (Nth matching call). Call-count triggers are preferred. `tool` or `op`, when set, constrain the match. | P1 | **Given** a fault with `tool=payments.charge, occurrence=2`, **when** `fault_for_call("payments.charge", None, 2)` runs, **then** it returns the fault; for occurrence 1 or another tool it returns `None`. | gap |
+| FR-14 | In the SDK, `configure_faults({boundary: {kind, occurrence, ...}})` sets descriptors. `run.maybe_fault(boundary, call_index=None)` counts calls per boundary per run, so `occurrence: N` fires on exactly the Nth call (pass `call_index` to supply your own count). It returns the descriptor and records a `fault` event only when `fault_injection=True` and the boundary is configured; otherwise it returns `None` and records nothing. | P0 | **Given** `fault_injection=True` and `occurrence: 3` on `pay`, **when** `maybe_fault("pay")` is called 4 times in a run, **then** only the 3rd call returns the descriptor, and counting restarts in the next run. With `occurrence: 1`, the 1st call fires and the 2nd returns `None`. | `tests/test_sdk.py::test_fault_fires_on_nth_call_per_run`, `::test_deterministic_fault_and_redaction` (`fault_injection=False` path: gap) |
 
-### 2.3 Trace (JSONL evidence)
+### 2.3 Redaction
 
-| ID | Description | Priority | Acceptance criteria |
-|---|---|---|---|
-| FR-09 | Emit one JSON object per line with schema `trace_schema_version`, `run_id`, `seq`, `event_type`, `virtual_ts_ms`, `actor`, `payload`; never write partial lines. | P0 | Given any completed run, when each line of the trace is validated against `schemas/trace-event.schema.json`, then 0 lines fail validation and `seq` is dense from 1..N. |
-| FR-10 | Record the full causal chain per tool call: `tool_call` (args + idempotency key if any), `tool_result` or `tool_timeout`, and any `injector_event` linked by `call_id`. | P0 | Given the timeout_retry golden run, when filtering by `call_id: call-003`, then exactly one `tool_call`, one `injector_event (effect_committed)`, and one `tool_timeout` share that `call_id`. |
-| FR-11 | Record policy decisions (`policy_decision` events: rule fired, retry allowed/denied, confirmation required) with the policy hash in effect. | P0 | Given a policy with `max_retries: 1`, when the agent's first retry is evaluated, then a `policy_decision` event names rule `on_tool_timeout`, verdict `allow_retry`, and `policy_sha256` matching the loaded file. |
-| FR-12 | Never record secrets (API keys, raw model credentials) in the trace; redact tool args matching `*_token`, `*secret*`, `*key` patterns except `idempotency_key`. | P0 | Given a tool arg `api_token` holding a live secret value, when run completes, then the trace contains `api_token: "[REDACTED]"` and grepping the trace for the raw secret returns nothing. |
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-15 | Write-time redaction replaces the value of any mapping key matching `*_token`, `*secret*` or `*key*` (case-insensitive) with `[REDACTED]`. `idempotency_key` is exempt. It applies to SDK `inputs`/`outputs` and to TraceWriter `tool`/`args`/`injector_event`/`policy_decision`/`detail`. | P0 | **Given** a tool input `{"api_key": "secret", "n": 1}`, **when** recorded, **then** the event holds `api_key: "[REDACTED]"` and `n: 1`; **given** `idempotency_key`, **then** it is kept. | `tests/test_sdk.py::test_deterministic_fault_and_redaction`, `tests/test_tracer.py::test_redaction_strips_secrets_but_keeps_idempotency_key` |
+| FR-16 | Email shapes in strings become `redacted@example.com`; card-like digit runs (13 to 19 digits, optional spaces or dashes) become `4111111111111111`. | P0 | **Given** the arg `{"email": "a@b.co"}`, **when** written by TraceWriter, **then** it reads `redacted@example.com`. | `tests/test_generic_core.py::test_tracer_never_redacts_its_own_hash_fields` (card path: gap) |
+| FR-17 | Harness-owned fields (`event_id`, `prev_hash`, counters) are never redacted, even when a hash starts with a card-like digit run. | P0 | **Given** a `prev_hash` beginning with 16 digits, **when** an event is written, **then** `prev_hash` is unchanged and `verify_chain` returns `ok`. | `tests/test_generic_core.py::test_tracer_never_redacts_its_own_hash_fields` |
+| FR-18 | `check --scan-pii` scans the raw trace and state files for emails and card-like runs (the two redaction placeholders are exempt) and fails the run on any hit. | P1 | See FR-34. | gap |
 
-### 2.4 Check (deterministic verifiers)
+### 2.4 Trace and hash chain
 
-| ID | Description | Priority | Acceptance criteria |
-|---|---|---|---|
-| FR-13 | Evaluate scenario invariants `exactly_once_mutation` (count of committed `charge_card` effects == 1) against trace + ledger. | P0 | Given the naive-retry trace (2 committed charges), when `agentcrash check --trace <f>` runs, then exit code is 1 and output contains `[FAIL] exactly_once_mutation` with both offending step numbers. |
-| FR-14 | Evaluate `task_completion` (ledger `invoice_status == 'PAID'`) independently of violation status. | P0 | Given a trace where the agent gave up (0 charges, status UNPAID), when check runs, then output reports `[FAIL] task_completion` while `exactly_once_mutation` reports `[PASS]`. |
-| FR-15 | Check exits 0 with `[PASS] all invariants` only when every invariant holds; machine-readable `--format json` reports per-invariant pass/fail plus side-effect count. | P0 | Given a fixed-policy trace (1 charge, PAID), when `check --format json`, then exit code 0 and JSON has `{invariants: [{id, status: pass}...], side_effect_count: 1, task_completed: true}`. |
-| FR-16 | Verifiers are pure functions of (trace, ledger snapshot): no network, no LLM calls, deterministic to the byte. | P0 | Given the same trace checked 3 times (one with network disabled), when outputs are diffed, then all three JSON reports are identical. |
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-19 | Each SDK event carries `prev_hash = sha256(prev_hash ":" canonical_json(event))`, starting from `GENESIS`. `seq` and `prev_hash` advance together under a lock, so concurrent steps cannot fork the chain. The chain is an integrity signal against accidental loss or reordering, not tamper resistance. | P0 | **Given** 8 threads recording 50 tool events each, **when** events are sorted by `seq`, **then** `seq` is 1..N with no gaps and every `prev_hash` recomputes. | `tests/test_generic_core.py::test_sdk_chain_is_consistent_under_threads` |
+| FR-20 | `TraceWriter` writes one sorted-key JSON object per line with `event_id`, `prev_hash`, `ts_virtual`, `run_id`, `scenario`, `step`, `tool`, `args`, `outcome`, `latency`, `injector_event`, `policy_decision`, `detail`. `event_id` ids are gapless; `ts_virtual` is monotonic non-decreasing; `outcome` is one of `success, timeout, error, blocked, info`. | P0 | **Given** a writer, **when** an event has a decreasing `ts_virtual`, an unknown `outcome`, or a negative `step`/`latency`, **then** `ValueError` is raised and nothing is written. | `tests/test_tracer.py::test_envelope_fields_and_sorted_keys`, `::test_gapless_ids_and_monotonic_ts`, `::test_non_monotonic_ts_rejected` |
+| FR-21 | `verify_chain(path)` returns `{"ok": True}` for an intact trace, else `{"ok": False, "first_bad": <event_id>, "reason": ...}` naming the first bad link (invalid JSON, broken id gap, `prev_hash` mismatch, `ts_virtual` decrease). | P0 | **Given** a trace with one line edited, **when** verified, **then** `first_bad` is that event's id. | `tests/test_tracer.py::test_chain_verifies_and_names_first_bad_link` |
+| FR-22 | `detail` larger than 65,536 bytes is replaced by `{"_truncated": true, "original_bytes": N, "preview": ...}` ending in `...[TRUNCATED detail]`. | P1 | **Given** a 100 KB detail, **when** written, **then** the stored event carries the marker and `original_bytes`. | `tests/test_tracer.py::test_detail_truncation_marker` |
+| FR-23 | `compute_run_id(scenario_text, policy_text, seed)` = first 16 hex chars of `sha256(scenario_text + policy_text + str(seed))`. | P1 | **Given** fixed inputs, **then** the id equals the documented rule and is stable across calls. | `tests/test_tracer.py::test_compute_run_id_matches_authority_rule` |
+| FR-24 | `VirtualClock` is the only time source for synthetic tools: integer ms, starts at 0, advances only via `sleep(ms)`; `deadline(ms)` does not advance it; negative inputs are refused. | P1 | **Given** a new clock, **then** `now() == 0`; **after** `sleep(50)`, `now() == 50`. | `tests/test_clock.py` (4 tests) |
 
-### 2.5 Diagnose (LLM proposes policy diffs only)
+### 2.5 Invariants
 
-| ID | Description | Priority | Acceptance criteria |
-|---|---|---|---|
-| FR-17 | Diagnose reads a failing trace + current policy and writes a structured `policy_patch.json` (list of rule edits); it never edits the policy file in place. | P0 | Given a failing trace, when `agentcrash diagnose --trace <f> --policy policy/base.yaml --output patch.json` runs, then `policy/base.yaml` mtime is unchanged and `patch.json` validates against `schemas/policy-patch.schema.json`. |
-| FR-18 | The proposed patch for the v0 timeout must contain `retry_with_idempotency_key: true` and a `reconcile_before_retry` action (status check before re-charge). | P0 | Given the double-charge trace, when diagnose runs with the reference adapter (or recorded fixture when offline), then `patch.json` contains an `on_tool_timeout` rule with both fields; test asserts via JSON path. |
-| FR-19 | Diagnose prints a human-readable explanation plus the exact diff preview, and refuses traces with zero violations. | P1 | Given a passing trace, when diagnose runs, then it exits non-zero with `No invariant violations to diagnose` and writes no output file. |
-| FR-20 | Diagnose never issues tool calls or mutates the environment; it is read-only except for the patch file. | P0 | Given a failing trace, when diagnose runs with a ledger checksum taken before/after, then checksums match and the trace directory gains no new `tool_call` events. |
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-25 | `RequiredStep(step)` (id `required_step:<name>`) passes when at least one event has `step == <name>`. | P0 | **Given** a trace with a `charge` step, **when** `required_step:charge` runs, **then** it passes with evidence `step 'charge' present (N event(s))`; for a missing step it fails with `missing from trace`. | `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants` (pass path) |
+| FR-26 | `DuplicateMutatingEffect` (id `duplicate_mutating_effect`) fails when two events with `kind=tool`, `status=ok` share the same tool and identical inputs. Traces without such a repeat pass vacuously. | P0 | **Given** two `pay` tool events with equal inputs, **when** checked, **then** the verdict is FAIL and evidence names the tool and both steps. | `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants` |
+| FR-27 | `FreshWriteOnly(tools=...)` (id `fresh_write_only`) fails any `op == "write"` result on a named versioned-store tool whose `expected_version` is missing or whose `version_conflict` is true. Default tool list is `key_value_store`. | P1 | **Given** writes at steps 1 (fresh) and 2 (no expected version) on `orders_db`, **when** checked with `tools=["orders_db"]`, **then** it fails and evidence lists step `[2]`. | `tests/test_generic_core.py::test_fresh_write_only_accepts_user_named_store_tools` |
+| FR-28 | `NoLostUpdate` (id `no_lost_update`) fails when a field set by a `concurrent_update` injector event is absent from the final `state["record_versions"]` snapshot. Traces with no concurrent writer pass vacuously. | P1 | **Given** a rival update `status=x` and a final state lacking it, **then** FAIL with the lost field named. | `tests/test_ledger.py::test_concurrent_update_preserved_in_snapshot` (state side only); verifier itself: gap |
+| FR-29 | `run_verifiers(trace, state, invariants)` returns `{"verdict": "PASS"|"FAIL", "results": [{id, passed, evidence}]}`. Unknown ids raise `UnknownVerifierError` (config error). A verifier that returns a bad verdict object or malformed input raises `VerifierError` and is never reported as PASS. | P0 | **Given** an unregistered id, **then** `UnknownVerifierError` lists the known ids. | exercised through `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants`; error paths: gap |
+| FR-30 | `evaluate_trace` builds a report (`invariants`, `passed`, `failed`, `verdict`, `results`); `compare_reports(baseline, candidate)` returns `regressions` (pass to fail), `fixes` (fail to pass) and a `regression` boolean. | P1 | **Given** a baseline that passes `x` and a candidate that fails it, **then** `regression` is true and `regressions == ["x"]`. | `tests/test_lab.py::test_compare_reports_flags_regression` |
+| FR-31 | Verifiers are pure functions of `(trace, state)`: no network, no clock, no model. Hosts register their own invariants with `register_verifier` (loaded via `check --plugin`). | P0 | **Given** the same trace checked twice, **then** the JSON reports are identical. | gap (determinism is enforced statically by FR-49) |
 
-### 2.6 Replay & regression
+### 2.6 `agentcrash check` (CLI and exit codes)
 
-| ID | Description | Priority | Acceptance criteria |
-|---|---|---|---|
-| FR-21 | Replay re-executes the same scenario + seed with a patched policy and reports fix status plus regression (control scenario still passes). | P0 | Given failing trace seed 42 + valid patch, when `agentcrash replay --trace <f> --policy patch.json` runs, then output shows `fix: VERIFIED (exactly_once PASS, task PAID)` and `regression: control_scenario PASS`. |
-| FR-22 | Replay fails closed on an invalid patch (schema violation or unknown rule) without running the agent. | P0 | Given a patch with `action: time_travel`, when replay runs, then it exits non-zero within 2 s with `Invalid policy patch` and no new trace is created. |
+`check --trace <jsonl> --invariant <id> [--invariant ...] [--plugin <module>] [--state <json>]
+[--report-out <path>] [--format text|json] [--scan-pii]`. Invariants `duplicate_mutating_effect`,
+`fresh_write_only`, `no_lost_update` and `required_step:<name>` are built in.
 
-### 2.7 CLI & reporting
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-32 | Exit `0` when every requested invariant passes; exit `1` when any fails. Text mode prints `[PASS]`/`[FAIL] Invariant <id> ... (<evidence>)` and `verdict=<V> report=<path>`. | P0 | **Given** a trace with a duplicated `pay` call, **when** `check` runs with `duplicate_mutating_effect` and `required_step:charge`, **then** exit is 1, stdout has `[FAIL] Invariant duplicate_mutating_effect` and `[PASS] Invariant required_step:charge`. | `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants` |
+| FR-33 | Exit `2` (`E_CONFIG`) for usage or config errors: no `--invariant`, trace or state file not found, unimportable `--plugin`, unknown invariant id. | P0 | **Given** no `--invariant`, **when** `check` runs, **then** exit is 2 and stderr says `E_CONFIG: no invariants`. **Given** `--trace nope.jsonl --format json`, **then** exit 2 and stdout is `{"api_version": "v1", "code": "E_CONFIG", "exit": 2, "hint": ...}`. | gap (behavior confirmed by hand on 0.3.0) |
+| FR-34 | Exit `3` (`E_TRACE_CORRUPT`) when the trace or state is not valid JSONL/JSON, is empty, or a verifier cannot judge it. A corrupt trace is never a verdict. | P0 | **Given** a trace whose first line is not JSON, **then** exit is 3 and the message names `line 1: invalid JSON`. | gap (behavior confirmed by hand on 0.3.0) |
+| FR-35 | `--scan-pii` scans the trace (and `--state`) after judging and exits `1` with code `E_PII_LEAK` on any raw email or card-like run; otherwise prints `PII scan: clean`. | P1 | **Given** a trace containing `jane@corp.com`, **then** exit is 1 and the hit location is printed. | gap |
+| FR-36 | `check` writes the report JSON (`api_version`, `results`, `run_id`, `verdict`; sorted keys) to `--report-out`, default `reports/<run_id>.verdict.json`. With `--format json`, prose goes to stderr and the report is printed to stdout. | P0 | **Given** `--report-out v.json`, **then** the file exists and holds the same `verdict` as the exit code implies. | `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants` (file write); JSON mode: gap |
+| FR-37 | The CLI surface is exactly `check`, `serve` and `--version`. `--help` documents every flag; an unknown command exits `2` with `unknown command`. `python -m agentcrash` is equivalent to the console script. | P0 | **Given** `agentcrash frobnicate`, **then** exit is 2. **Given** `check --help` / `serve --help`, **then** every flag in the table above appears. | `tests/test_cli_help.py` (4 cases) |
 
-| ID | Description | Priority | Acceptance criteria |
-|---|---|---|---|
-| FR-23 | CLI provides `run`, `check`, `diagnose`, `replay` with `--help` text, `--version`, and non-zero exit on failure; `run` supports `--seed`, `--scenario`, `--model`, `--policy`, `--max-steps`. | P0 | When `agentcrash --help` and `agentcrash run --help` execute, then both exit 0 and `run --help` documents all five flags; `agentcrash bogus` exits non-zero with usage hint. |
-| FR-24 | Every command emits a machine-readable `--format json` mode and a human default mode; JSON mode never emits prose on stdout. | P1 | Given `check --format json`, when stdout is parsed with `python -m json.tool`, then parsing succeeds and stderr carries any prose. |
-| FR-25 | `check` and `replay` produce a pass/fail report containing: invariant table, side-effect count, task completion, run/seed/policy hashes. | P0 | Given any check run, when the report (text or json) is inspected, then all four elements are present; example golden report in `tests/golden/report_timeout_retry.json`. |
+Exit codes `4` (`EXIT_POLICY_REJECTED`) and `5` (`EXIT_RUNABORTED`) are defined in `cli.py` for
+host CLIs that reuse the helpers; `check` and `serve` never return them.
+
+### 2.7 Control plane (`server.py`)
+
+`agentcrash serve [--port 8901] [--bind 127.0.0.1]` starts a stdlib loopback server. A lazy
+FastAPI app factory (`create_fastapi_app`, needs the `server` extra) exposes the same store.
+
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-38 | `POST /v1/events` with `{"events": [...]}` is idempotent on `event_id`. The response is `{accepted, duplicate, invalid, schema_version}`. Runs list events in `seq` order. A body whose `events` is not a list gets 400. | P0 | **Given** a batch already ingested, **when** it is posted again, **then** `accepted == 0` and `duplicate == len(batch)`. | `tests/test_server_ingestion.py::test_idempotent_ingestion_and_run_detail`, `::test_http_roundtrip_multi_project` |
+| FR-39 | Events that are not objects, lack `event_id`, or fail `validate_event` are counted in `invalid` and not stored. | P0 | **Given** `[{"event_id": "e1"}]` (missing keys), **then** `invalid == 1` and nothing is stored. | gap |
+| FR-40 | Auth: when `AGENTCRASH_API_TOKENS` (comma-separated) is non-empty, every `/v1/*` call needs `Authorization: Bearer <token>` from the list, else 401. Unset means loopback mode (all local traffic accepted). Lab static assets stay public. | P0 | **Given** `AGENTCRASH_API_TOKENS=s3cret`, **then** `/v1/projects` returns 401 with no or a wrong token, 200 with `s3cret`, and `/` returns 200 with no token. | `tests/test_server_ingestion.py::test_auth_allowlist_gates_api_but_not_lab` (FastAPI path: gap) |
+| FR-41 | Endpoints: `POST /v1/projects` (needs `project`, else 400), `GET /v1/runs[?project=]`, `GET /v1/runs/{id}` (404 `run not found`), `GET /v1/reliability/{project}`, `POST /v1/evaluations` (needs `run_id`; malformed rows give 400), `GET /v1/runs/{id}/evaluation` (404 `no evaluation for run` until one is stored), `POST /v1/admin/prune`. The stdlib and FastAPI servers expose the same routes and the same `GET /v1/runs` row shape (`run_id`, `project`, `workflow`, `events`). | P0 | **Given** a registered project and ingested run, **then** `GET /v1/runs/{id}` returns the project and ordered events and `GET /v1/reliability/{project}` returns `runs == 1`. | `tests/test_server_ingestion.py::test_http_roundtrip_multi_project`, `tests/test_lab.py::test_evaluation_submit_and_run_detail`, `::test_malformed_evaluation_is_client_error` (function-level `TypeError`; the HTTP 400 mapping is untested), `::test_lab_static_and_evaluation_roundtrip`, `tests/test_server_ingestion.py::test_stdlib_and_fastapi_expose_the_same_read_routes` (route parity; skips the FastAPI half when the extra is absent) |
+| FR-42 | Evaluation storage is idempotent per invariant id: resubmitting overwrites; the summary verdict is PASS only if all stored verdicts pass. | P1 | **Given** two submissions for the same id, **then** the count of invariants does not grow. | `tests/test_lab.py::test_evaluation_submit_and_run_detail` |
+| FR-43 | Retention: `prune_runs(project, keep_last_n, older_than_days)` and `POST /v1/admin/prune`. Keep-last-N uses ingestion order; `older_than_days` drops runs created at or before the cutoff even if keep-last-N would keep them. At least one criterion is required; negative values are refused. Pruning removes the dropped runs' events and evaluations. | P0 | **Given** 3 runs and `keep_last_n=2`, **then** result is `{"project": "p", "dropped": 1, "kept": 2}` and the oldest run is gone. **Given** no criterion or `keep_last_n=-1`, **then** `ValueError` (HTTP 400). | `tests/test_server_ingestion.py::test_prune_enforces_retention`, `::test_prune_over_http_requires_fields` |
+| FR-44 | `serve` binds `127.0.0.1` by default. Lab assets are served only for flat `.html`, `.js`, `.css` names; traversal (`..`, `\`, nested `/`) returns 404. The Lab ships no baked demo bundle. | P0 | **Given** `GET /lab/../x`, **then** 404. | `tests/test_no_static_bundle.py` (3 tests); traversal: gap |
+| FR-45 | Importing the core pulls in no domain stack, and a second app can integrate with stdlib plus `agentcrash` only. | P1 | **Given** `examples/minimal_agent/app.py`, **then** it imports nothing outside stdlib and `agentcrash`. | `tests/test_lab.py::test_core_import_pulls_no_domain_stacks`, `tests/test_second_app.py` |
+
+Store is in-memory per process; there is no persistence (see §6).
+
+### 2.8 Policy and patch validation
+
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-46 | `load_policy` / `validate_policy_data` accept only `schema_version: policy/v1` documents that satisfy `schemas/policy.json`. Rules need `rule` (`on_tool_timeout`, `on_mutating_retry`, `on_untrusted_content`, `on_stale_read`), `tool`, `action` (`fail`, `retry_same`, `check_then_act`, `require_confirmation`); `retry.max_attempts` is 0 to 3. Failures raise `PolicyError`. | P0 | **Given** a rule with `rule: bogus`, **then** `PolicyError` / `PolicyRejectedError` states the value is not one of the allowed names. | gap (confirmed by hand on 0.3.0) |
+| FR-47 | `validate_patch_data` / `load_patch_doc` accept only `policy_patch/v1` documents with `schema_version`, `source_run_id`, `rationale`, `patch` (object). Anything else raises `PolicyRejectedError` (exit code 4 in host CLIs) before anything runs. | P0 | **Given** a patch without `source_run_id`, **then** `PolicyRejectedError: ... 'source_run_id' is a required property`. | gap (confirmed by hand on 0.3.0) |
+| FR-48 | `apply_patch(base, patch_doc)` applies `patch` as an RFC 7396 JSON Merge Patch (arrays replace, `null` deletes), normalizes shorthand rule keys (`max_retries` 0 to 3 to `retry.max_attempts`; `retry_with_idempotency_key` to `retry.require_idempotency_key`; action aliases `check_transaction_status` to `check_then_act`, `confirm_with_user` to `require_confirmation`, `abort` to `fail`), then re-validates the merged policy. Returns `(new_policy, canonical_yaml)`; the input policy is not mutated. | P0 | **Given** a base `{"schema_version": "policy/v1", "rules": []}` and a patch adding `on_tool_timeout` for `payments.charge` with `max_retries: 2`, **then** the result has `retry.max_attempts == 2`. **Given** a patch yielding an invalid rule name, **then** `PolicyRejectedError`. | gap (confirmed by hand on 0.3.0) |
+| FR-49 | `diff_policies(old, new)` renders one line per added (`+`), removed (`-`) or changed (`~`) rule field, for human review before a patch is accepted. | P1 | **Given** two policies differing in `retry.max_attempts`, **then** one `~ rule/tool: retry.max_attempts a -> b` line appears. | gap |
+| FR-50 | Live patch proposal is opt-in: `fetch_live_patch(...)` returns `None` unless `AGENTCRASH_LLM_BASE_URL` is set (key from `AGENTCRASH_LLM_API_KEY`). It speaks to any OpenAI-compatible `/chat/completions` endpoint. Transport failure returns `None`; a 200 response that is not a valid `policy_patch/v1` raises `PolicyRejectedError`. The model never edits a policy file and never decides a verdict. | P0 | **Given** the base URL variable is unset, **when** `fetch_live_patch` is called, **then** it returns `None` and makes no request. | `tests/test_generic_core.py::test_live_patch_is_opt_in` (unparsable-output path: gap) |
+
+### 2.9 Determinism and core boundary
+
+| ID | Requirement | P | Acceptance | Proof |
+|---|---|---|---|---|
+| FR-51 | `clock.py`, `tracer.py`, `ledger.py`, `injector.py` and `verifiers.py` do not import `time`, `datetime` or `random` (ACR001 lint, static AST check). | P0 | **Given** the repo, **when** `pytest tests/test_acr001.py` runs, **then** it passes. | `tests/test_acr001.py::test_no_wall_clock_or_global_random` |
+| FR-52 | No domain vocabulary in `src/agentcrash` (ADR-009). | P0 | **Given** the source tree, **then** the banned-term scan finds no hits. | `tests/test_generic_core.py::test_core_source_has_no_domain_vocabulary` |
+| FR-53 | `Ledger` (synthetic versioned store) seeds records at version 1, bumps the version on a fresh write, flags `version_conflict` on a stale write (still committing it), applies rival updates, and has a stable `ledger_hash`. It is a test double, not a product surface. | P1 | **Given** a stale `expected_version`, **when** written, **then** the write commits and `version_conflict` is true. | `tests/test_ledger.py` (6 tests) |
 
 ## 3. External interface requirements
 
-- CLI: `agentcrash run|check|diagnose|replay [--scenario, --trace, --policy, --output, --seed, --format]`; exit 0 = pass/success, 1 = invariant violation or usage-correct failure, 2 = usage/config error. `--format json` is pure JSON on stdout.
-- File interfaces: `scenario.yaml` (input), `policy/*.yaml` + `policy_patch.json` (input), `traces/<run_id>.jsonl` (append-only output), report JSON (output). JSON schemas live in `schemas/`.
-- Model interface: one `AgentAdapter.complete(messages, tools, timeout_s)` method; v0 ships `llama_api` + `stub` implementations. Swapping models changes no other code.
-- No GUI, no hardware, no network protocol owned by AgentCrash in v0; the only network call is adapter → Llama API over HTTPS.
+- CLI: `agentcrash check|serve`, `--version`; exit codes in FR-32 to FR-34 (0 pass, 1 fail or PII leak, 2 usage/config, 3 corrupt trace).
+- Python API: `agentcrash.__all__` exports `AgentCrash`, `WorkflowConfig`, `FaultPolicy`, `RunContext`, `RequiredStep`, `DuplicateMutatingEffect`, `evaluate_trace`, `compare_reports`, `make_event`, `validate_event`, `SCHEMA_VERSION`, and the control-plane functions.
+- HTTP: `/v1/projects`, `/v1/events`, `/v1/runs`, `/v1/runs/{id}`, `/v1/runs/{id}/evaluation`, `/v1/evaluations`, `/v1/reliability/{project}`, `/v1/admin/prune`; Lab UI at `/` and `/lab`.
+- Environment variables: `AGENTCRASH_DISABLED`, `AGENTCRASH_API_TOKENS`, `AGENTCRASH_LLM_BASE_URL`, `AGENTCRASH_LLM_API_KEY`.
+- Files: SDK-schema JSONL traces (input to `check`), optional state JSON, `policy/v1` YAML, `policy_patch/v1` JSON, verdict report JSON. Schemas ship in `src/agentcrash/schemas/`.
 
 ## 4. Data requirements
 
-- Data created: trace JSONL events, ledger snapshot (`ledger.json`: charges, invoice_status, doc versions), reports, policy patches.
-- Source of truth: the trace + ledger snapshot pair, keyed by `run_id`; verifiers read both, never the live environment.
-- Retention: keep every trace that backs a reported result; control-run traces kept for regression. No deletion command in v0 (delete via filesystem).
-- Classification: traces are test data — may contain synthetic PII-like values (invoice #9821, $150); must never contain real API keys (see FR-12).
+- Created: SDK events (in memory, optionally exported), TraceWriter JSONL files, verdict reports, in-memory control-plane store (projects, events, runs, evaluations).
+- Source of truth for a verdict: the trace plus optional state snapshot passed to `check`. Verifiers never read a live environment.
+- Retention: control-plane data is process-local and pruned through `prune_runs` / `/v1/admin/prune` (FR-43). Trace files on disk are the caller's to delete.
+- Classification: traces are test data. They may hold synthetic PII-shaped values but must carry no real secrets; FR-15 to FR-18 enforce this.
 
 ## 5. Quality requirements (traceability to 12-NFR)
 
-| NFR ID | Target summary | Covering FRs |
+| NFR | Target summary | Covering FRs |
 |---|---|---|
-| NFR-DET-01/02 (determinism: same seed ⇒ identical fault schedule + trace) | Verified by rerun-diff | FR-06, FR-16 |
-| NFR-PERF-01/02 (harness overhead ≤ 10%, 100-step trace ≤ 2 MB) | Benchmark script | FR-02, FR-09 |
-| NFR-REL-01 (verifier false-pass rate 0 on golden suite) | Golden suite | FR-13…FR-16 |
-| NFR-OBS-01 (every verdict explainable to offending steps) | Failure message audit | FR-13, FR-25 |
-| NFR-USE-01 (4-command demo ≤ 5 min) | Timed demo script | FR-23…FR-25 |
-| NFR-PORT-01 (Linux/macOS/WSL, Py 3.11–3.13) | CI matrix | FR-03, FR-23 |
+| NFR-DET-01…03 (same input gives byte-identical output) | static lint plus repeat-run comparison | FR-20, FR-21, FR-23, FR-31, FR-51 |
+| NFR-PERF-01/02 (SDK overhead, trace size) | `bench/run_overhead.py` | FR-01, FR-19, FR-20 |
+| NFR-REL-01…03 (no false verdicts, fail-closed errors) | tests + exit-code contract | FR-29, FR-32 to FR-34, FR-47 |
+| NFR-SEC-01 (no secrets or PII in artifacts) | redaction tests + `--scan-pii` | FR-15 to FR-18, FR-35 |
+| NFR-PORT-01/02 (Python 3.11 to 3.13) | CI matrix | FR-37 |
 
 ## 6. Constraints and assumptions
 
-Constraints: (a) v0 implements ambiguous-timeout only — poisoned-doc/stale-read types are
-rejected, not half-implemented. (b) Diagnoser may only propose policy diffs; it cannot change
-verifiers, scenarios, or tool code. (c) No wall-clock dependence in tools/injector — virtual
-clock only. (d) Startup budget: harness runs on a laptop, no services to deploy.
+Constraints: (a) deterministic invariants own verdicts; models only propose schema-valid patches (FR-50). (b) The core never imports a domain or host stack (FR-45, FR-52). (c) No `time`, `datetime` or `random` imports in the deterministic modules listed in FR-51. (d) The hash chain is not tamper-proof; there is no signing in v1.
 
-Assumptions: (a) Synthetic `charge_card` with server-side idempotency-key dedup stands in for
-real gateways (Stripe-style semantics). (b) Llama API available for live-agent demos; stub
-agent suffices for CI. (c) One-operator review: every policy patch is human-approved before replay.
+Known limitations, stated so nobody relies on them:
 
-Dependencies: Python 3.11+, PyYAML, Llama API credentials (live mode only), JSON Schema
-validator for trace/patch schemas.
+- SDK call counts are per boundary per run and live in the `RunContext`. Async or threaded hosts that interleave calls to one boundary should pass `call_index` themselves for a stable count.
+- The SDK hash chain and `seq` are per `AgentCrash` instance, not per run.
+- The control-plane store is in-memory, with no persistence and no request-size limit.
+- `NoLostUpdate` and `FreshWriteOnly` read TraceWriter-style fields (`injector_event`, `args`, `detail`), not SDK-schema fields. They need host-produced traces of that shape.
 
-## 7. Acceptance and traceability (v0 gate)
+Assumptions: one operator reviews each policy patch before it is applied; hosts that need `run` / `diagnose` / `replay` supply their own runner (R6).
 
-| Requirement ID | Product goal (PRD) | Design element (05) | Verification method | Status |
+## 7. Acceptance and traceability
+
+| Requirement IDs | Goal | Design element | Verification | Status |
 |---|---|---|---|---|
-| FR-01…FR-04 | Runnable chaos demo | Agent Adapter + Synthetic Tools | `pytest tests/test_run.py` + demo script | Draft |
-| FR-05…FR-08 | Reproducible faults | Fault Injector | Seeded rerun-diff test | Draft |
-| FR-09…FR-12 | Auditable evidence | Tracer + schemas | Schema validation test | Draft |
-| FR-13…FR-16 | Deterministic verdicts | Verifiers | Golden pass/fail suite | Draft |
-| FR-17…FR-20 | Safe auto-diagnosis | Diagnoser (diff-only) | Patch schema + read-only test | Draft |
-| FR-21…FR-22 | Proven fixes | Replay Runner | Fix + regression test | Draft |
-| FR-23…FR-25 | Fundable 5-min demo | CLI + report | Timed demo + `--help` test | Draft |
+| FR-01…FR-08 | Capture without owning the loop | SDK | `tests/test_sdk.py`, `tests/test_generic_core.py` | Covered; error and `enabled=False` paths gap |
+| FR-09…FR-14 | Deterministic fault triggers | Injector | `tests/test_generic_core.py`, `tests/test_sdk.py` | FR-14 covered; FR-12, FR-13 gap (roadmap R2) |
+| FR-15…FR-18 | No secrets or PII in traces | Redaction, `scan_pii.py` | `tests/test_tracer.py`, `tests/test_sdk.py` | Key redaction covered; card and PII-scan gap |
+| FR-19…FR-24 | Verifiable evidence | Tracer, SDK chain | `tests/test_tracer.py`, `tests/test_clock.py` | Covered |
+| FR-25…FR-31 | Deterministic verdicts | Invariants, registry | `tests/test_generic_core.py`, `tests/test_lab.py` | Partly covered; verifier error paths gap (R3) |
+| FR-32…FR-37 | CI-usable `check` | `cli.py` | `tests/test_generic_core.py`, `tests/test_cli_help.py` | Exit 0/1 covered; exit 2/3 and JSON mode gap |
+| FR-38…FR-45 | Ingest, query, retain | `server.py` | `tests/test_server_ingestion.py`, `tests/test_lab.py` | Covered for stdlib server; FastAPI routes covered by parity test only |
+| FR-46…FR-50 | Schema-gated policy patches | `policy.py` | `tests/test_generic_core.py` | Opt-in covered; validation gap (R6) |
+| FR-51…FR-53 | Determinism and domain-free core | ACR001 lint, guard test | `tests/test_acr001.py`, `tests/test_generic_core.py`, `tests/test_ledger.py` | Covered |
 
-Open questions: OQ-01 owner for SRS sign-off — Founder (scope). OQ-02 exact Llama model
-name for launch demo (`llama-3.3-70b` assumed) — Tech lead, resolves by M0 entry. OQ-03
-whether v0 ships `diagnose` live-LLM or fixture-backed (default: live with fixture
-fallback, FR-18 test uses fixture) — Tech lead, resolves by M0 entry.
+Total suite: 56 offline tests (`pytest -q`), plus ruff, black (line length 100) and the ACR001 lint in CI on Python 3.11 to 3.13.
+
+Open questions: OQ-01 SRS sign-off owner is the Founder.
 
 ## 8. Change history
 
 | Milestone | Change | Author |
 |---|---|---|
-| Pre-M0 draft | Created SRS skeleton with one placeholder FR | Pre-M0 skeleton (author unrecorded; OQ-01) |
-| M0 draft (this file) | Full v0 SRS: FR-01…FR-25, interfaces, traceability; replaced all TBDs except OQ-01…OQ-03 | Group B |
-
+| Pre-M0 draft | SRS skeleton with one placeholder FR | Pre-M0 skeleton (author unrecorded) |
+| M0 draft | Scenario-runner SRS, FR-01…FR-25 | Group B |
+| 0.3.0 rewrite | FRs rewritten to the real surface (SDK, faults, redaction, hash chain, invariants, `check`, control plane, policy); each FR names its proof test or `gap`; removed-feature scope dropped per ADR-009 | Docs rewrite |

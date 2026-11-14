@@ -150,3 +150,31 @@ def test_auth_allowlist_gates_api_but_not_lab(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_stdlib_and_fastapi_expose_the_same_read_routes():
+    import pytest
+
+    from agentcrash import submit_evaluation
+    from agentcrash.server import create_fastapi_app
+
+    reset_store()
+    server, port = serve(port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        ac = AgentCrash(WorkflowConfig(project="p"))
+        with ac.run(name="w") as run:
+            pass
+        ingest_events(list(ac.traces[run.run_id]))
+        assert _code(port, f"/v1/runs/{run.run_id}/evaluation") == 404
+        submit_evaluation(run.run_id, [{"id": "x", "passed": True, "evidence": "ok"}])
+        assert _get(port, f"/v1/runs/{run.run_id}/evaluation")["verdict"] == "PASS"
+        assert _get(port, "/v1/reliability/p")["runs"] == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    pytest.importorskip("fastapi")
+    paths = {route.path for route in create_fastapi_app().routes}
+    assert {"/v1/runs/{run_id}/evaluation", "/v1/reliability/{project}"} <= paths

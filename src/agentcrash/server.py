@@ -233,6 +233,16 @@ def reliability_summary(project: str) -> dict[str, Any]:
         }
 
 
+def _run_row(run: dict[str, Any]) -> dict[str, Any]:
+    """Slim run summary shared by both servers' ``GET /v1/runs``."""
+    return {
+        "run_id": run["run_id"],
+        "project": run["project"],
+        "workflow": run["workflow"],
+        "events": len(run["events"]),
+    }
+
+
 class _Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload: Any) -> None:
         body = json.dumps(payload).encode()
@@ -361,26 +371,19 @@ class _Handler(BaseHTTPRequestHandler):
                 runs = [
                     r for r in _STORE["runs"].values() if not project or r.get("project") == project
                 ]
-            self._send(
-                200,
-                {
-                    "runs": [
-                        {
-                            "run_id": r["run_id"],
-                            "project": r["project"],
-                            "workflow": r["workflow"],
-                            "events": len(r["events"]),
-                        }
-                        for r in runs
-                    ]
-                },
-            )
+            self._send(200, {"runs": [_run_row(r) for r in runs]})
         elif len(parts) == 3 and parts[:2] == ["v1", "runs"]:
             detail = run_detail(parts[2])
             if detail is None:
                 self._send(404, {"error": "run not found"})
             else:
                 self._send(200, detail)
+        elif len(parts) == 4 and parts[:2] == ["v1", "runs"] and parts[3] == "evaluation":
+            summary = evaluation_summary(parts[2])
+            if summary is None:
+                self._send(404, {"error": "no evaluation for run"})
+            else:
+                self._send(200, summary)
         elif len(parts) == 3 and parts[:2] == ["v1", "reliability"]:
             self._send(200, reliability_summary(parts[2]))
         else:
@@ -441,7 +444,7 @@ def create_fastapi_app() -> Any:
             runs = [
                 r for r in _STORE["runs"].values() if not project or r.get("project") == project
             ]
-        return {"runs": runs}
+        return {"runs": [_run_row(r) for r in runs]}
 
     @app.get("/v1/runs/{run_id}")
     def get_run(run_id: str, authorization: str | None = Header(default=None)) -> dict[str, Any]:
@@ -488,6 +491,13 @@ def create_fastapi_app() -> Any:
         if summary is None:
             raise HTTPException(404, "no evaluation for run")
         return summary
+
+    @app.get("/v1/reliability/{project}")
+    def get_reliability(
+        project: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        _fastapi_auth(authorization)
+        return reliability_summary(project)
 
     try:
         from fastapi.staticfiles import StaticFiles  # type: ignore

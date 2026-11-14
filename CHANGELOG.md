@@ -31,6 +31,14 @@ Chaos engineering for any agentic workflow: the core no longer ships domain code
 
 ### Fixed
 
+- `maybe_fault` always checked call 1, so `occurrence: 2+` never fired. It now counts
+  calls per boundary per run (`occurrence: N` fires on exactly the Nth call); pass
+  `call_index` to override. Behavior change: an `occurrence: 1` fault no longer fires
+  on every call, only the first.
+- Stdlib server lacked `GET /v1/runs/{id}/evaluation`; FastAPI app lacked
+  `GET /v1/reliability/{project}` and returned a different `GET /v1/runs` row shape.
+  Both servers now expose the same routes and rows.
+
 - Tracer redacted its own `prev_hash`/`event_id` fields; a hash with 13+ digits in a row
   could be rewritten as a "card number" and break the chain.
 - SDK hash chain could fork under concurrent steps (`prev_hash` updated outside the lock).

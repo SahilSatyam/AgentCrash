@@ -1,21 +1,23 @@
-# 13 — Contributing and ADLC Workflow
+# 13 - Contributing and ADLC Workflow
 
-**Status:** Approved · **Owner:** Tech lead · **Milestone:** M0 Baseline
-**Lens:** ADLC (AI/Agentic Development Lifecycle) for a startup idea — problem, users,
-MVP, risks, costs; no corporate bureaucracy, no day-wise timelines.
+**Status:** Revised for 0.3.0 · **Owner:** Tech lead · **Milestone scheme:** M0-M3 (ADR-006)
+**Lens:** ADLC (AI/Agentic Development Lifecycle) for a startup project: problem, users,
+MVP, risks, costs. No corporate bureaucracy, no day-wise timelines.
 
 ## 1. Principles
 
 1. Evidence over opinion. A claim about agent behavior ships with a trace, a test, or a
-   benchmark number — never a bare assertion.
-2. Determinism first. Anything that affects a verdict (verifiers, clocks, seeds) must be
+   benchmark number, never a bare assertion.
+2. Determinism first. Anything that affects a verdict (invariants, clock, seed) must be
    reproducible from checked-in inputs.
-3. Small slices, gated by milestones. Work lands per milestone (M0–M3, per ADR-006);
-   nothing is scheduled by calendar day.
-4. The model proposes, code disposes. LLM-generated diagnoses and patches are always
-   validated by deterministic checks before they count.
-5. Startup frugality. Prefer the smallest change that closes the loop; track compute
-   cost (model calls, CI minutes) on every milestone review.
+3. Small slices, gated by milestones. Work lands per milestone (M0-M3, ADR-006) and maps
+   to roadmap items R1-R7; nothing is scheduled by calendar day.
+4. The model proposes, code disposes. A model may only propose a schema-valid
+   `policy_patch/v1`; deterministic invariants own every verdict (ADR-001, ADR-004).
+5. Domain-free core (ADR-009). Host- or domain-specific code lives in the host, not in
+   `src/agentcrash/`.
+6. Frugality. Prefer the smallest change that closes the loop. The suite and the demo loop
+   are offline and free; keep them that way.
 
 ## 2. Branch and PR conventions
 
@@ -23,42 +25,46 @@ MVP, risks, costs; no corporate bureaucracy, no day-wise timelines.
 
 | Prefix | Use | Example |
 |---|---|---|
-| `feat/` | New capability or scenario | `feat/stale-read-verifier` |
-| `fix/` | Bug fix | `fix/idempotency-key-reuse` |
-| `docs/` | ADLC docs only | `docs/runbook-demo-script` |
-| `chore/` | Tooling, CI, deps | `chore/ruff-config` |
-| `exp/` | Throwaway spike (never merges directly) | `exp/llama-latency-probe` |
+| `feat/` | New capability | `feat/fault-catalog-v2` |
+| `fix/` | Bug fix | `fix/prune-age-cutoff` |
+| `docs/` | Docs only (including ADLC) | `docs/runbook-refresh` |
+| `chore/` | Tooling, CI, deps | `chore/ci-windows-runner` |
+| `perf/` | Performance work with bench evidence | `perf/tracer-redaction` |
+| `exp/` | Throwaway spike (never merges directly) | `exp/otel-export-probe` |
 
-Rules: one concern per branch; branch from `main`; rebase onto `main` before review;
-delete after merge.
+Rules: one concern per branch; branch from `develop` (the repo's default branch);
+rebase onto `develop` before review; delete after merge. Release tags come from `main`
+(section 8). Never push directly to `main`.
 
 ### Commit conventions (Conventional Commits)
 
-Format: `type(scope): short imperative summary`, e.g. `feat(tracer): validate event
-schema at write time`. Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`.
-Every commit that changes behavior must reference the milestone: `Refs: M0`.
+Format: `type(scope): short imperative summary`, for example
+`fix(server): prune runs by age on coarse clocks`. Types: `feat`, `fix`, `docs`, `test`,
+`refactor`, `perf`, `chore`. Breaking changes use `!` (as in `refactor!:`) plus a
+migration note in `CHANGELOG.md`. Behavior-changing commits may add a trailer such as
+`Refs: M1` or `Refs: R2`.
 
 ### Pull request process
 
-1. Open a PR with the template below; keep it under ~400 changed lines where possible.
-2. Required checks: test suite green, linters clean, trace fixtures updated if behavior
-   changed, docs touched if user-visible behavior changed.
-3. Required reviewers: one human owner (tech lead or delegate). Agent review is
-   advisory only and never satisfies the reviewer requirement.
-4. Agent-generated work: the PR description must state which parts are agent-generated
-   and what evidence the human verified (tests run, traces inspected).
-5. Merge method: squash-and-merge; the squash message follows commit conventions.
+1. Open a PR with the template below; keep it near 400 changed lines or fewer.
+2. Required checks: the four gates in section 4 are green; docs touched if
+   user-visible behavior changed.
+3. Required reviewer: one human owner (tech lead or delegate). Agent review is advisory
+   and never satisfies the requirement.
+4. Agent-generated work: the PR description states which parts are agent-generated and
+   what the human verified (commands run, output read).
+5. Merge method: squash-and-merge; the squash message follows the commit conventions.
 
 PR template:
 
 ```markdown
 ## Goal (one paragraph)
 
-## Milestone: M0 | M1 | M2 | M3
+## Milestone: M0 | M1 | M2 | M3   (and roadmap item R1-R7 if any)
 
 ## Changes
 
-## Evidence (tests, traces, numbers)
+## Evidence (commands and output: pytest, ruff, black, bench if relevant)
 
 ## Agent-generated sections (if any) + human verification performed
 
@@ -67,101 +73,129 @@ PR template:
 
 ## 3. Milestone-gated ADLC flow (no dates)
 
-Milestones are exit-gated: the next milestone starts only when the current gate is met.
-There are no day-wise estimates anywhere in planning or reporting.
+Milestones are exit-gated: the next one starts only when the current gate is met. The
+M0-M3 scheme stays as defined in ADR-006; the old per-milestone scenario and `diagnose`
+gates were retired with ADR-009. Current mapping:
 
-| Milestone | Goal | Exit gate (all must hold) |
-|---|---|---|
-| M0 Prototype | Repo, harness skeleton, full timeout exactly-once loop | `run → check → diagnose → replay` green on invoice #9821; double-charge detected pre-fix; no double-charge post-fix; docs 01–08 approved |
-| M1 Scenario Expansion | Poisoned-doc + stale-read scenarios | New verifiers with positive/negative fixtures; S2/S3 diagnoser coverage; docs 09–14 approved |
-| M2 Review + Regression | Reliable fixes that stay fixed | Policy-diff review rendering; regression suite green on every policy change |
-| M3 Hardening + Demo | Reliable public demo | Multi-model comparison table; shippable package; runbook demo executed twice without intervention; cost sheet published |
+| Milestone | Goal | Exit gate (all must hold) | Roadmap items |
+|---|---|---|---|
+| M0 Baseline | Domain-free core, offline loop, docs honest | Four gates green on py3.11-3.13; setup-guide demo loop gives FAIL then PASS; NFR-PERF-01 met (`bench.json`) | 0.3.0 scope, R7 hygiene |
+| M1 Coverage | Framework adapters, richer faults and invariants | Adapter examples run end to end offline; new faults and invariants have positive and negative tests | R1, R2, R3 |
+| M2 Measurement | Reliability metrics and standard traces | Metrics reproducible from stored runs; trace export validated | R4, R5 |
+| M3 Closing the loop | Host-supplied diagnose and replay; public release | Runner contract documented and tested; release checklist done | R6, R7 |
+
+The roadmap (`docs/plans/2026-11-14-sota-roadmap.md`) is a draft: implement a roadmap
+item only after the owner replies `go`.
 
 Change control inside a milestone: scope changes need owner approval in the PR or the
-roadmap doc (15); ADR changes follow Section 6.
+roadmap doc (doc 15); ADR changes follow section 6.
 
 ## 4. Definition of Done
 
 A task is done only when all of these hold:
 
 - [ ] Acceptance criteria from the issue or milestone plan are met.
-- [ ] Tests added or updated; full suite green (`pytest -q`, see doc 10).
-- [ ] Deterministic behavior: same seed gives same result across two consecutive runs.
-- [ ] Trace fixtures updated if tool-call behavior changed; `trace validate` passes.
-- [ ] Linters clean (Ruff + Black, see Section 7); no new warnings.
-- [ ] Docs updated: ADLC doc touched if the change alters behavior, contracts, or ops.
-- [ ] Security and failure cases considered (Section 5 checklist).
-- [ ] Cost noted: model calls and approximate tokens added to the PR evidence section.
-- [ ] Human review completed for any agent-generated code or diagnosis.
+- [ ] Tests added or updated; the gates below pass.
+- [ ] Deterministic behavior: same input and seed give the same trace content and verdict.
+- [ ] Domain-free: `tests/test_generic_core.py` passes without edits to its banned list.
+- [ ] Docs updated: README, `docs/setup.md`, or the ADLC doc touched if behavior,
+      contracts, flags, or ops changed; `CHANGELOG.md` updated for user-visible change.
+- [ ] Security and failure cases considered (section 5).
+- [ ] Perf-sensitive change (`sdk.py`, `tracer.py`, `events.py`): `bench/run_overhead.py`
+      re-run and compared with `docs/phase7-evidence/bench.json`.
+- [ ] Human review completed for any agent-generated code.
+
+Gates (these are the CI steps in `.github/workflows/ci.yml`):
+
+```powershell
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m black --check .
+.\.venv\Scripts\python -m pytest -q
+.\.venv\Scripts\python -m pytest tests/test_acr001.py -q
+```
 
 ## 5. Review checklist (paste into PRs)
 
-- [ ] Change meets its task acceptance criteria and milestone scope.
-- [ ] Requirements and interfaces remain consistent (no silent contract drift).
-- [ ] Relevant checks and manual verification are documented with commands and outputs.
-- [ ] Security, privacy, and failure cases considered: prompt-injection surface (tool
-  outputs treated as untrusted data), least-privilege tool access, confirmation gates
-  on mutating tools, no secrets in traces or logs.
-- [ ] Failure-mode coverage: timeout/ambiguity, poisoned content, concurrent update —
-  whichever apply — have a test or an explicit non-applicability note.
-- [ ] User-facing behavior and operational implications described (CLI output changes,
-  new flags, runbook impact).
-- [ ] No dates or day-wise promises introduced in code, docs, or comments.
+- [ ] Change meets its acceptance criteria and milestone scope.
+- [ ] Public surface (SDK names, CLI flags, `/v1` routes, exit codes, schema versions)
+      is consistent across code, README, `docs/setup.md`, and docs 06-07.
+- [ ] Commands and outputs in the PR are real and were run.
+- [ ] Security and privacy: redaction still matches `tracer.py` and `scan_pii.py`; no
+      secrets in code, traces, or logs; auth behavior of `/v1/*` unchanged unless
+      intended (doc 11).
+- [ ] Failure modes: ambiguous timeout, stale read, and malformed input paths have a
+      test or an explicit non-applicability note. Bad input fails closed with the
+      documented exit code (1 FAIL or PII leak, 2 usage/config, 3 corrupt trace).
+- [ ] The SDK still never raises into the host.
+- [ ] No dates or day-wise promises in code, docs, or comments.
 
 ## 6. Change management
 
 | Change type | Approval | How |
 |---|---|---|
-| Requirement wording (doc 03) | Product lead | PR against the doc; link the motivating trace or user evidence |
-| New or superseding ADR | Tech lead | New ADR file section; old ADR marked Superseded, never edited |
-| Policy schema change | Tech lead + backend engineer | Schema PR with migration note and updated `policy diff` golden files |
-| Trace schema version bump | Tech lead | New `schema_version`; validator accepts old + new for one milestone |
-| Release / version tag | Founder | See Section 8; changelog entry in doc 15 |
+| Requirement wording (doc 03) | Product lead | PR against the doc; link the motivating trace or evidence |
+| New or superseding ADR | Tech lead | New ADR section in doc 08; old ADR marked Superseded, never edited |
+| Policy or patch schema change | Tech lead | Schema PR in `src/agentcrash/schemas/` with a migration note and updated tests |
+| Event or trace schema bump | Tech lead | New schema version; reader accepts old plus new for one milestone |
+| Removing public API | Tech lead | `CHANGELOG.md` migration table, as done for 0.3.0 |
+| Release / version tag | Owner | See section 8; `CHANGELOG.md` entry |
 
 ## 7. Coding standards
 
-- **Runtime:** Python 3.11+. Type hints required on all public functions; `mypy --strict`
-  clean on `agentcrash/` package.
-- **Style:** Black (line length 100) + Ruff. Run `ruff check .` and `black --check .`
-  before pushing. Docstrings on every module and public class (Google style).
-- **Testing:** pytest. Every verifier and injector needs positive and negative fixture
-  tests under `tests/fixtures/`. Property: same seed → byte-identical trace (assert on
-  `trace_id`-normalized JSONL). See doc 10 for the full strategy.
-- **Clocks:** Production code must use the injected `VirtualClock`; direct calls to
-  `time.sleep()`, `time.time()`, or `asyncio.sleep()` in tools/injectors are lint
-  errors (custom Ruff rule `ACR001`). Wall-clock allowed only in explicitly marked
-  soak-mode modules.
-- **Secrets:** No API keys in code, traces, or fixtures. Model access via environment
-  variables (`LLAMA_API_KEY`, `LLAMA_BASE_URL`); tests use recorded fakes.
-- **Traces as test data:** Fixture traces live in `tests/fixtures/traces/*.jsonl` and are
-  reviewed like code. Never commit a trace containing real credentials or PII.
-- **Costs:** Keep the suite cheap: default test run uses the fake model adapter; live
-  Llama calls are opt-in (`--model llama-3.3-70b`) and labeled `slow`.
+- **Runtime:** Python 3.11+. Type hints on public functions. Docstrings on modules and
+  public classes.
+- **Style:** Black and Ruff, line length 100 (`pyproject.toml`). CI enforces both.
+- **Determinism:** deterministic modules (clock, tracer, ledger, injector, verifiers, ...)
+  must not use wall-clock time or global `random`. `tests/test_acr001.py` (ACR001) fails
+  on banned imports. Time comes from `VirtualClock`.
+- **Domain-free:** no domain vocabulary or default tool targets in `src/agentcrash/`.
+  Use neutral names in docs and tests (`payments.charge`, `crm.update`, `kv`).
+- **Dependencies:** core runtime deps are `pyyaml` and `jsonschema`. Anything else needs
+  a PR note naming the capability it buys, and usually belongs in an extra.
+- **Secrets:** environment only (doc 11). Tests use no real keys.
+- **Tests:** pytest, offline, built in code with `tmp_path`; no committed golden traces
+  (doc 10).
+- **SDK safety:** the SDK must never raise into the host and must stay a no-op under
+  `AGENTCRASH_DISABLED=1`.
 
 ## 8. Release and versioning
 
-- Versioning: SemVer (`v0.1.0`, `v0.2.0`, …). Prototype stays `0.x` until M3 exit.
-- Each release tags `main`, updates doc 15 changelog, and attaches: (a) the regression
-  suite report, (b) the demo trace bundle, (c) the cost sheet (model calls, tokens,
-  CI minutes for the milestone).
-- Rollback of a release: re-tag the previous green commit; policy files are
-  backward-compatible within a major version, so a code rollback never needs a trace
-  migration inside the same milestone.
+- SemVer. The package is `0.x`, so a minor release may break the API; every break gets a
+  migration row in `CHANGELOG.md`. Current version: 0.3.0 (verify with
+  `python -m agentcrash --version`).
+- Release steps: gates green on the py3.11-3.13 matrix; `bench/run_overhead.py` within
+  targets; `CHANGELOG.md` entry; tag the commit on `main`. Packaging hygiene (pinning,
+  audit, upload) is roadmap R7.
+- Rollback of a release: re-tag the previous green commit and publish a patch release.
+  Event and policy schemas are versioned (`v1`), so a code rollback inside a major
+  schema version needs no data migration.
 
-## 9. Local development quickstart
+## 9. Local development quickstart (Windows PowerShell)
 
-```bash
-# inside WSL, repo root /home/sahil/AgentCrash
-uv venv && source .venv/bin/activate
+```powershell
+git clone https://github.com/SahilSatyam/AgentCrash.git
+cd AgentCrash
+uv venv
 uv pip install -e ".[dev]"
-ruff check . && black --check . && pytest -q
-python -m agentcrash run --scenario timeout_retry --model fake
-python -m agentcrash check --trace traces/latest.jsonl
+
+# Gates
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m black --check .
+.\.venv\Scripts\python -m pytest -q
+
+# Verify the CLI
+.\.venv\Scripts\python -m agentcrash --version
+.\.venv\Scripts\python -m agentcrash check --help
+
+# Demo loop: see docs/setup.md section 3 and doc 14
 ```
 
-## 10. Startup cost discipline
+Always use `python -m agentcrash`: Windows Smart App Control can block the unsigned
+`agentcrash.exe` launcher (doc 14, section 7).
 
-Every milestone review answers: model calls used, tokens spent, CI minutes consumed,
-and whether the fake adapter could have covered more. If live-model spend for a
-milestone exceeds the budget set in doc 01 (planning), the overrun needs a one-line
-justification in the changelog. Frugality is a review criterion, not an afterthought.
+## 10. Cost discipline
+
+The core needs no model and no network, so the suite and demo loop cost nothing beyond
+CI minutes. Live-model patch proposals (`fetch_live_patch`) are opt-in and happen in the
+host. Any change that adds a recurring model call, a new CI job, or a new dependency
+states the cost in the PR evidence section.
