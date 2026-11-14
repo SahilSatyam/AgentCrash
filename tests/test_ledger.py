@@ -5,31 +5,31 @@ from agentcrash.ledger import Ledger
 
 def test_seeded_record_reads_at_version_1() -> None:
     ledger = Ledger()
-    ledger.kv_seed("odrl-policy-1", {})
-    assert ledger.kv_read("odrl-policy-1") == {"value": {}, "version": 1}
+    ledger.kv_seed("order-1", {})
+    assert ledger.kv_read("order-1") == {"value": {}, "version": 1}
 
 
 def test_fresh_write_bumps_version_without_conflict() -> None:
     ledger = Ledger()
-    ledger.kv_seed("odrl-policy-1", {})
-    written = ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
+    ledger.kv_seed("order-1", {})
+    written = ledger.kv_write("order-1", {"status": "paid"}, 1)
     assert written == {"version": 2, "conflict": False}
-    assert ledger.kv_read("odrl-policy-1")["version"] == 2
+    assert ledger.kv_read("order-1")["version"] == 2
 
 
 def test_stale_write_still_commits_but_flags_conflict() -> None:
     ledger = Ledger()
-    ledger.kv_seed("odrl-policy-1", {})
-    ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
-    stale = ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
+    ledger.kv_seed("order-1", {})
+    ledger.kv_write("order-1", {"status": "paid"}, 1)
+    stale = ledger.kv_write("order-1", {"status": "paid"}, 1)
     assert stale == {"version": 3, "conflict": True}
-    assert ledger.kv_read("odrl-policy-1")["version"] == 3
+    assert ledger.kv_read("order-1")["version"] == 3
 
 
 def test_concurrent_update_preserved_in_snapshot() -> None:
     ledger = Ledger()
-    ledger.kv_seed("odrl-policy-1", {})
-    applied = ledger.kv_apply_concurrent("odrl-policy-1", {"note": "rival"})
+    ledger.kv_seed("order-1", {})
+    applied = ledger.kv_apply_concurrent("order-1", {"note": "rival"})
     assert applied["version_after"] == 2
     snapshot = ledger.snapshot("r")
     assert snapshot["record_versions"][0]["value"] == {"note": "rival"}
@@ -37,9 +37,9 @@ def test_concurrent_update_preserved_in_snapshot() -> None:
 
 def test_record_doc_tracks_retrieved_bytes() -> None:
     ledger = Ledger()
-    ledger.record_doc("access-request-1", "tests/fixtures/odrl_nl.yaml#sloppy_offer_v1", "benign")
+    ledger.record_doc("refund-policy-1", "docs/refund-policy.md", "benign")
     snapshot = ledger.snapshot("r")
-    assert snapshot["docs"][0]["doc_id"] == "access-request-1"
+    assert snapshot["docs"][0]["doc_id"] == "refund-policy-1"
 
 
 def test_ledger_hash_stable_and_matches_snapshot() -> None:
@@ -47,8 +47,8 @@ def test_ledger_hash_stable_and_matches_snapshot() -> None:
 
     def build() -> Ledger:
         ledger = Ledger()
-        ledger.kv_seed("odrl-policy-1", {})
-        ledger.kv_write("odrl-policy-1", {"type": "Offer"}, 1)
+        ledger.kv_seed("order-1", {})
+        ledger.kv_write("order-1", {"status": "paid"}, 1)
         return ledger
 
     first = build().snapshot(run_id)

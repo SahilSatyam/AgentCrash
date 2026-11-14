@@ -52,7 +52,7 @@ class FaultPolicy:
     """Deterministic fault decisions for named boundaries.
 
     ``faults`` maps boundary name -> fault descriptor, e.g.
-    ``{"save_odrl": {"kind": "timeout_after_commit"}}``. Decisions are
+    ``{"payments.charge": {"kind": "timeout_after_commit"}}``. Decisions are
     seeded and reproducible; faults only fire when the SDK was created
     with ``fault_injection=True``.
     """

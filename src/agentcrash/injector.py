@@ -36,14 +36,9 @@ FAULT_CATALOG: tuple[dict[str, object], ...] = (
     {
         "kind": "timeout_after_commit",
         "description": "Ambiguous timeout: the write commits, then the tool reports TIMEOUT.",
-        "effect": "committed=True with the simulated latency; naive blind retry double-saves.",
+        "effect": "committed=True with the simulated latency; naive blind retry duplicates the side effect.",
         "inline_supported": True,
-        "default_params": {
-            "tool": "save_odrl",
-            "op": "write",
-            "occurrence": 1,
-            "simulated_latency_ms": 2000,
-        },
+        "default_params": {"occurrence": 1, "simulated_latency_ms": 2000},
         "params_schema": [
             {"name": "tool", "type": "string", "required": False},
             {"name": "op", "type": "string", "required": False},
@@ -56,12 +51,7 @@ FAULT_CATALOG: tuple[dict[str, object], ...] = (
         "description": "Clean timeout: the tool reports TIMEOUT without committing.",
         "effect": "committed=False with the simulated latency; retries are safe but blind ones waste work.",
         "inline_supported": True,
-        "default_params": {
-            "tool": "save_odrl",
-            "op": "write",
-            "occurrence": 1,
-            "simulated_latency_ms": 2000,
-        },
+        "default_params": {"occurrence": 1, "simulated_latency_ms": 2000},
         "params_schema": [
             {"name": "tool", "type": "string", "required": False},
             {"name": "op", "type": "string", "required": False},
@@ -74,13 +64,7 @@ FAULT_CATALOG: tuple[dict[str, object], ...] = (
         "description": "Rival writer lands just before the agent read.",
         "effect": "applies updates to the record first; blind writes lose them.",
         "inline_supported": True,
-        "default_params": {
-            "tool": "save_odrl",
-            "op": "read",
-            "occurrence": 1,
-            "key": "odrl-policy-1",
-            "updates": {"reviewer": "rival-team"},
-        },
+        "default_params": {"occurrence": 1},
         "params_schema": [
             {"name": "tool", "type": "string", "required": False},
             {"name": "op", "type": "string", "required": False},
@@ -94,7 +78,7 @@ FAULT_CATALOG: tuple[dict[str, object], ...] = (
         "description": "Injected instruction in a fixture document (inert marker; fixture bytes do the work).",
         "effect": "documentation-only; the retrieved bytes carry the injection.",
         "inline_supported": False,
-        "default_params": {"tool": "parse_policy"},
+        "default_params": {},
         "params_schema": [
             {"name": "tool", "type": "string", "required": False},
             {"name": "doc_id", "type": "string", "required": False},
@@ -132,6 +116,13 @@ def validate_fault_entry(kind: object, params: object) -> dict[str, object]:
     merged = copy.deepcopy(entry.get("default_params", {}))
     assert isinstance(merged, dict)
     merged.update(params)
+    missing = sorted(
+        field["name"]
+        for field in schema
+        if isinstance(field, dict) and field.get("required") and field["name"] not in merged
+    )
+    if missing:
+        raise UnknownFaultError(f"fault {kind!r} is missing required params: " + ", ".join(missing))
     return {"kind": kind, "at_step": None, "params": merged}
 
 

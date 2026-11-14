@@ -1,9 +1,9 @@
 # AgentCrash — Phase-Wise Implementation Plan
 
-- **Status:** Phase 0 done on branch `chore/phase-0-baseline` (review pending); Phases 1+ await `go`
+- **Status:** Historical record (Phases 0–7 done). Superseded for new work by `docs/plans/2026-11-14-sota-roadmap.md`. The domain demo track (old Phases 6 and 8) was removed in 0.3.0; the core is domain-free.
 - **Owner:** Founder / tech lead
 - **Repo:** `/home/sahil/AgentCrash` (git, origin `github.com/SahilSatyam/AgentCrash.git`)
-- **Docs basis:** `docs/adlc/` 16-doc set (working tree) + AgentODRL for S4 pin (`_staging_adlc/` S4/v0.2.1 assumed at planning time is absent — see ADR-007)
+- **Docs basis:** `docs/adlc/` 16-doc set (working tree)
 - **Milestone scheme:** M0–M3 per staging doc 15 (see F.1 — must be applied repo-wide in Phase 0)
 
 ## A. Executive Summary
@@ -71,7 +71,6 @@ Status today: all behavior below is **missing** (Phase 0 landed the empty `src/`
 - [ ] FR-21–FR-22 replay/regression/fail-closed (03 §2.6) → verify: fix + regression test; `time_travel` rejection test
 - [ ] FR-23–FR-25 CLI/exit codes/reports (03 §2.7, 07 §2–3) → verify: `--help` test, exit-code matrix, golden report compare
 - [ ] S2/S3 scenarios + verifiers, corpus precision/recall ≥0.95/0.90 (15 M1) → verify: scenario oracles + worksheets
-- [ ] S4 ODRL track + v0.2.1 pin (02 §7.1, 15 M1.9–11) → verify: 3 fault variants reproduce + replay green
 - [ ] NFR budgets ≤10% overhead, ≤2MB/100 steps (03 §5, 12) → verify: benchmark script in CI
 - [ ] Secrets/redaction/sandbox/supply chain (11 §4–7) → verify: redaction tests, lockfile, ACR001 lint
 
@@ -259,39 +258,9 @@ Exit criteria:
 
 - [x] M1 gates green; corpus + worksheets checked in as exit evidence — evidence: precision 1.000/recall 1.000, fix rate 5/5, 0 new violations
 
-### Phase 6 — S4 ODRL demo (P1)
+### Phase 6 — Domain demo track (removed)
 
-Objective: model-free 5-minute demo reusing the same loop (Journey 5).
-
-Scope: scripted ReAct (`parse_policy → validate_odrl → save_odrl` versioned store), ODRL 2.2 JSON-LD `Set`/`Offer`/`Agreement` (hand-rolled frozen subset `odrl-subset-frozen-v1`, NOT pyshacl — deviation: install weight; see box below), 4 verifiers (`odrl_valid`, `no_attacker_grant`, `exactly_once_save`, `fresh_write_only`), 3 fault variants, synthetic NL fixtures.
-
-Tasks:
-
-- [x] Implement S4 synthetic tools + scripted converter (no model; `--model` ignored for `odrl_convert`) — evidence: `tools.py` parse/validate/save branches, `adapter.py` s4 flow + `is_odrl_scenario`, CLI ignored-note; 12 S4 tests green
-- [x] Author S4 fixtures (basic NL policies + expected ODRL JSON-LD, poisoned-sentence and concurrent-edit variants) — evidence: `tests/fixtures/odrl_nl.yaml` (3 entries, naive+expected ODRL each), 3 scenario dirs, `policies/fixed-odrl-convert.yaml`
-- [x] Implement 4 S4 verifiers + goldens; add Journey-5 steps to runbook (doc 14) — evidence: `verifiers.py` OdrlValid/NoAttackerGrant/ExactlyOnceSave (+FreshWriteOnly covers save_odrl), 6 corpus goldens + labels, runbook §5B
-
-Deviations from the plan as written (accepted at implementation):
-
-- No `pyshacl` dependency: `src/agentcrash/odrl.py` hand-rolls the frozen subset (install weight avoided; `uv.lock` untouched).
-- Goldens live in `tests/corpus/s4-*-seed42.*` (not `traces/golden/`): that directory is replay's live `--regression` input, and pre-fix S4 traces re-run under non-S4 policies would red-flag the S1–S3 regression gates (Phase 5 set the `tests/corpus/` precedent for scenario goldens).
-- Attacker principal is `attacker-client` (not an email): trace write-time redaction (doc 11 S5–S6) scrubs email shapes, which would erase the verifier evidence.
-
-Dependencies: Phase 5 (loop + regression harness); S4 ported docs from Phase 0.
-
-Deliverables:
-
-- [x] `odrl_convert` scenario + fixtures + verifiers + goldens — evidence: 3 scenario dirs + fixture + fixed policy + 6 corpus files, all committed
-
-Acceptance / testing:
-
-- [x] All 3 fault variants reproduce pre-fix and replay green; S4 excluded from multi-model table; offline gate holds (no key) — evidence: clean FAIL odrl_valid / poisoned FAIL no_attacker_grant / concurrent FAIL fresh_write_only; per-variant diagnose patch replays VERIFIED; `--model bogus` run exits 0
-
-Risks: `pyshacl` weight/lockfile churn — mitigated by hand-rolled subset (no new dep).
-
-Exit criteria:
-
-- [x] Unaided Journey-5 dry run passes; S4 fixtures included in published corpus plan — evidence: §5B J5-1..J5-3 dry-runs green, 6 S4 items in `tests/corpus/labels.yaml` (metrics n=36, precision/recall 1.000)
+Removed in 0.3.0. The scripted domain converter, its fixtures, verifiers and goldens left the repo; the core keeps only domain-free checks (`required_step`, `duplicate_mutating_effect`, `fresh_write_only`, `no_lost_update`). See ADR-009.
 
 ### Phase 7 — Ship it (P0)
 
@@ -323,49 +292,16 @@ Exit criteria:
 
 - [x] Public repo + instructions + demo evidence complete; submission filed — evidence: child-side demo evidence complete (`docs/phase7-evidence/`); submit step is owner-side
 
-### Phase 8 — Live-model NL→ODRL pivot (founder-directed)
+### Phase 8 — Live-model domain pivot (removed)
 
-Objective: all agentic workflows are real end-to-end Meta-model calls
-(no mocks, no fakes); payment surface removed; NL→ODRL-only demo.
+Removed in 0.3.0 together with Phase 6. Kept from it: occurrence-based fault triggers (`tool`/`op`/`occurrence`) and the opt-in OpenAI-compatible diagnoser transport (now `AGENTCRASH_LLM_BASE_URL`). See ADR-009.
 
-Scope: `LlamaAdapter` over `POST {LLAMA_BASE_URL}/chat/completions`
-(model `muse-spark-1.3`, Bearer `LLAMA_API_KEY`, env-only);
-policy-driven brief + tool-argument reference; occurrence-based faults
-(`tool`/`op`/`occurrence`); 4 ODRL scenarios; verdict-pinned oracles +
-2 recorded live fixtures; `check --policy` override; payment scenarios,
-tools, verifiers, goldens, and `test_s4.py` removed.
+### Phase 9 — Domain-free core (0.3.0)
 
-Tasks:
-
-- [x] Ground endpoint/auth/model from Meta docs; live smoke via diagnose — evidence: `adapter.py`/`policy.py` transport, `muse-spark-1.3` default
-- [x] Remove payment surface (scenarios, tools, verifiers, ledger/charges, goldens, tests) — evidence: `grep charge_card` clean in `src/` (bench wording excepted), `scenarios/` ODRL-only
-- [x] Occurrence-based faults + `odrl_convert_timeout` (timeout_after_commit on first `save_odrl` write) — evidence: `injector.py` `fault_for_call`/`concurrent_for_call`, scenario `params.tool/op/occurrence`
-- [x] Live loop proven: naive double-save FAIL → fixed single-save PASS → live diagnose patch → replay — evidence: fixtures `tests/fixtures/traces/odrl_convert_timeout-{naive,fixed}-seed42.*`, `check` FAIL/PASS observed
-- [x] Suite reworked (scripted transport replays recorded behaviors; 1 key-gated live test skips in CI) — evidence: `ruff` + `black` clean, `pytest` 136 passed, 1 skipped
-- [x] Docs: ADR-008, README + `docs/setup.md` live flow, this phase record — evidence: this section
-
-Deviations from the plan as written (accepted, founder-directed):
-
-- Byte goldens replaced by verdict-pinned oracles for live traces (model output is nondeterministic); scripted-transport tests replay recorded action sequences for determinism.
-- Concurrent fault fires on first *read* (not write): a rival landing atomically before the first write is unobservable and unwinnable; landing before the first read lets reconcile-first merge and win.
-- `env-state.json` schema drops `invoices`/`charges` (payment removal); `no_lost_update` added to `odrl_convert_concurrent` invariants (was unjudged).
-- Meta protocol: no `response_format`, no `tool`-role messages, prose-tolerant JSON extraction (all proven by live 400s).
-
-Dependencies: Phases 0–7 (harness, loop, verdicts); live key for runs.
-
-Deliverables:
-
-- [x] Live ODRL demo + fixtures + suite + docs, committed on `feat/live-llama-run` (merge pending owner review)
-
-Acceptance / testing:
-
-- [x] Gates green without a key; live loop re-provable with a key — evidence: 136 passed / 1 skipped; recorded naive FAIL + fixed PASS
-
-Risks: model protocol drift (adapter fails closed, ADR-008 records shape); live cost (`max_steps` bounds calls; key-gated test skips in CI); key in chat history (rotation advised).
-
-Exit criteria:
-
-- [x] `feat/live-llama-run` pushed for owner review; no merge by agent — evidence: branch on origin, PR/merge owner-side
+- [x] Remove every domain module, fixture, doc and default (fault defaults no longer name a tool; `concurrent_update` requires `key` + `updates`)
+- [x] Drop the domain-only optional extra; relock
+- [x] Guard test `tests/test_generic_core.py` fails if domain vocabulary returns to `src/`
+- [x] Version 0.3.0; README, setup and examples rewritten around the generic SDK
 
 ## F. Critical Decisions and Open Questions
 
@@ -396,9 +332,10 @@ Exit criteria:
 - [x] Phase 3: 2 verifiers + `check` (text/JSON, exits 0/1/3) + golden suite; G3 offline green; double-charge FAIL demonstrated — evidence: 67 passed, `check` seed42 golden exits 1 with steps [3, 4]
 - [x] Phase 4: policy engine + fixture-backed `diagnose` + `replay` + regression; full loop green offline; live-adapter decision taken — evidence: 95 passed, `fix: VERIFIED (exactly_once_mutation PASS, task PAID)` + `regression: 4/4 PASS`
 - [x] Phase 5: S2 + S3 scenarios/verifiers/corpus; precision/recall + fix-rate worksheets meet targets; G6 green — evidence: 105 passed, precision 1.000/recall 1.000, replay-fix 5/5 with 0 new violations
-- [x] Phase 6: S4 converter + fixtures + 4 verifiers + goldens; Journey-5 dry run unaided — evidence: 12 S4 tests green, J5-1..J5-3 dry-runs green, full suite green
+- [x] Phase 6: domain demo track — removed in 0.3.0 (ADR-009)
 - [x] Phase 7: packaging clean-install log; full CI matrix; cost sheet; runbook ×2 rehearsals; release tag + changelog; demo recorded; submitted — evidence: CI matrix + scan-pii in `ci.yml`, 129 tests green, `docs/phase7-evidence/` (regression report, cost sheet, demo bundle, 2 rehearsals, bench); tag/changelog/submit are owner actions
-- [x] Phase 8: live-model ODRL pivot (founder-directed) — evidence: 136 passed / 1 skipped, recorded naive-FAIL + fixed-PASS fixtures, ADR-008, `feat/live-llama-run` pushed for owner review
+- [x] Phase 8: live-model domain pivot — removed in 0.3.0 (ADR-009)
+- [x] Phase 9: domain-free core, guard test, 0.3.0
 
 ## I. Recommended First Implementation Step
 
@@ -408,8 +345,3 @@ Record ADR-006 (scheme + anchors + canonical schema + run_id rule), then scaffol
 - [x] Expected changes: `docs/adlc/01, 02, 15` (+ S4 stubs in 03/06/07/10 or ADR-007); new `pyproject.toml`, `src/agentcrash/__init__.py`, `.gitignore`, CI workflow — landed as: ADR-006/007 + label/anchor/owner edits across 11 adlc docs; new `pyproject.toml`, `src/agentcrash/` (3 files), `tests/`, `.github/workflows/ci.yml`, `.gitignore`, `uv.lock` (01/02/15 untouched — no changes needed)
 - [x] Verify with: `git status` (intended files only), `pytest -q` green, `ruff check .` and `black --check .` clean — all observed green 2026-10-29
 - [ ] Note: commits/pushes happen only on explicit ask per repo safety rules
-
-## Sources
-
-- AgentODRL paper (abridged view): https://arxiv.org/abs/2512.00602
-- AgentODRL full HTML: https://arxiv.org/html/2512.00602v1

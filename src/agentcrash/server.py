@@ -254,6 +254,11 @@ class _Handler(BaseHTTPRequestHandler):
         """401 unless the credential check passes."""
         if _bearer_ok(self.headers.get("Authorization")):
             return True
+        # Drain the unread body first; replying early makes some TCP
+        # stacks (notably Windows) reset the connection mid-request.
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)
         self._send(401, {"error": "unauthorized"})
         return False
 

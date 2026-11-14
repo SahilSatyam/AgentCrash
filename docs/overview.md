@@ -6,7 +6,7 @@ Evals for AI agents typically grade the final answer. For tool-using agents that
 
 ## Architecture (prototype)
 
-- **Agent adapter** — model-agnostic interface for the agent under test (Meta models first, simple ReAct loop).
+- **SDK** — framework-neutral instrumentation for the agent under test; the host owns the loop (plain Python, LangGraph, OpenAI Agents SDK, MCP, ...).
 - **Synthetic tools** — deterministic, seeded tools with a virtual clock so timeouts are reproducible.
 - **Fault injector** — scripted failure scenarios: ambiguous timeouts, poisoned documents, concurrent writes.
 - **Tracer** — one shared JSONL trace schema for all scenarios (tool calls, args, results, injector events, policy decisions).

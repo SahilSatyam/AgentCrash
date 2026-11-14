@@ -1,7 +1,7 @@
 """Domain-free invariant registry: verdict type, plugin protocol, lookup.
 
 Split out of :mod:`agentcrash.verifiers` so the installable core can
-register and evaluate invariants without importing ODRL/SHACL stacks.
+register and evaluate invariants without importing any domain stack.
 ``verifiers.py`` re-exports every name defined here for backward
 compatibility.
 """

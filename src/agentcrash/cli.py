@@ -3,9 +3,8 @@
 ``check`` verifies registry invariants against an SDK-schema JSONL trace;
 ``serve`` runs the loopback control plane (Lab + ``/v1`` API).
 
-Host-owned commands (``run`` / ``diagnose`` / ``replay`` / ``seed`` /
-``optimize-prompts``) live in the host CLI (e.g. ``odrl_agent.cli``) and
-reuse the shared helpers below (exit codes, :class:`ConfigError`,
+Host-owned commands (``run`` / ``diagnose`` / ``replay``) live in the
+host's own CLI and reuse the shared helpers below (exit codes, :class:`ConfigError`,
 ``resolve_scenario`` / ``resolve_policy`` / ``load_yaml`` /
 ``validate_run_inputs``). Core never imports host or domain stacks.
 """
@@ -111,6 +110,22 @@ def validate_run_inputs(scenario: dict[str, Any], policy: dict[str, Any]) -> tup
     return seed, max_steps
 
 
+def register_builtin_invariants(requested: list[str]) -> None:
+    """Register the core invariants so ``check`` works without plugins.
+
+    ``required_step:<name>`` ids are parametric and registered on demand.
+    Plugins imported afterwards may override any built-in id.
+    """
+    from agentcrash.invariants import DuplicateMutatingEffect, RequiredStep
+    from agentcrash.verifiers import FreshWriteOnly, NoLostUpdate, register_verifier
+
+    for verifier in (DuplicateMutatingEffect(), FreshWriteOnly(), NoLostUpdate()):
+        register_verifier(verifier)
+    for invariant_id in requested:
+        if invariant_id.startswith("required_step:") and invariant_id != "required_step:":
+            register_verifier(RequiredStep(invariant_id.split(":", 1)[1]))
+
+
 def cmd_check(argv: list[str]) -> int:
     """Execute ``agentcrash check`` (exit 0 PASS, 1 VERDICT_FAIL, 3 corrupt).
 
@@ -126,7 +141,7 @@ def cmd_check(argv: list[str]) -> int:
         action="append",
         default=[],
         help="dotted module to import before judging (registers host "
-        "invariants, e.g. odrl_agent.verifiers); repeatable",
+        "invariants, e.g. my_agent.invariants); repeatable",
     )
     parser.add_argument("--state", default=None)
     parser.add_argument("--report-out", default=None)
@@ -161,6 +176,7 @@ def cmd_check(argv: list[str]) -> int:
             "no invariants: pass at least one --invariant <id>",
             EXIT_USAGE,
         )
+    register_builtin_invariants(args.invariant)
     for plugin in args.plugin:
         try:
             __import__(plugin)

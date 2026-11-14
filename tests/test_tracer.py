@@ -11,7 +11,7 @@ RUN_ID = "a3f9c1d2e4b50607"
 
 
 def _writer(tmp_path, run_id=RUN_ID):
-    return TraceWriter(run_id, "odrl_convert_timeout", str(tmp_path / "t.jsonl"))
+    return TraceWriter(run_id, "timeout_retry", str(tmp_path / "t.jsonl"))
 
 
 def test_envelope_fields_and_sorted_keys(tmp_path) -> None:
@@ -44,8 +44,8 @@ def test_envelope_fields_and_sorted_keys(tmp_path) -> None:
 
 def test_gapless_ids_and_monotonic_ts(tmp_path) -> None:
     with _writer(tmp_path) as writer:
-        writer.write(step=1, tool="save_odrl", outcome="success", latency=300)
-        writer.write(step=2, tool="save_odrl", outcome="timeout", latency=2000)
+        writer.write(step=1, tool="write_record", outcome="success", latency=300)
+        writer.write(step=2, tool="write_record", outcome="timeout", latency=2000)
         path = writer.path
     with open(path, encoding="utf-8") as fh:
         events = [json.loads(line) for line in fh]
@@ -57,8 +57,8 @@ def test_gapless_ids_and_monotonic_ts(tmp_path) -> None:
 def test_chain_verifies_and_names_first_bad_link(tmp_path) -> None:
     with _writer(tmp_path) as writer:
         writer.write(step=0, outcome="info")
-        writer.write(step=1, tool="save_odrl", outcome="success", latency=300)
-        writer.write(step=2, tool="save_odrl", outcome="timeout", latency=2000)
+        writer.write(step=1, tool="write_record", outcome="success", latency=300)
+        writer.write(step=2, tool="write_record", outcome="timeout", latency=2000)
         path = writer.path
     assert verify_chain(path)["ok"] is True
     with open(path, encoding="utf-8") as fh:
@@ -85,9 +85,9 @@ def test_redaction_strips_secrets_but_keeps_idempotency_key(tmp_path) -> None:
     with _writer(tmp_path) as writer:
         event = writer.write(
             step=1,
-            tool="save_odrl",
+            tool="write_record",
             args={
-                "record": "odrl-policy-1",
+                "record": "order-1",
                 "idempotency_key": "inv-9821-a3f",
                 "api_key": "sk-live-abc123",
                 "auth_token": "tok-secret",

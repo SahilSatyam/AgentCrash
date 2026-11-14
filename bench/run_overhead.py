@@ -29,8 +29,8 @@ REPEATS = 5
 def _harness_write(writer: TraceWriter, i: int) -> None:
     writer.write(
         step=i,
-        tool="save_odrl",
-        args={"record": "odrl-policy-1", "expected_version": i},
+        tool="write_record",
+        args={"record": "order-1", "expected_version": i},
         outcome="success",
         latency=300,
         detail={"phase": "tool_result", "data": {"version": i + 2}},
@@ -39,7 +39,7 @@ def _harness_write(writer: TraceWriter, i: int) -> None:
 
 def _envelope(i: int) -> dict:
     return {
-        "args": {"record": "odrl-policy-1", "expected_version": i},
+        "args": {"record": "order-1", "expected_version": i},
         "detail": {"data": {"version": i + 2}, "phase": "tool_result"},
         "event_id": f"evt_bench_{i:04d}",
         "injector_event": None,
@@ -50,7 +50,7 @@ def _envelope(i: int) -> dict:
         "run_id": "bench",
         "scenario": "bench",
         "step": i,
-        "tool": "save_odrl",
+        "tool": "write_record",
         "ts_virtual": i * 50,
     }
 
@@ -74,11 +74,11 @@ def _time_harness(tmp: Path) -> float:
         target = tmp / "harness.jsonl"
         if target.exists():
             target.unlink()
-        writer = TraceWriter(run_id="bench", scenario="bench", path=str(target))
-        start = time.perf_counter()
-        for i in range(N_EVENTS):
-            _harness_write(writer, i)
-        best = min(best, time.perf_counter() - start)
+        with TraceWriter(run_id="bench", scenario="bench", path=str(target)) as writer:
+            start = time.perf_counter()
+            for i in range(N_EVENTS):
+                _harness_write(writer, i)
+            best = min(best, time.perf_counter() - start)
     return best
 
 
@@ -86,9 +86,9 @@ def _hundred_step_bytes(tmp: Path) -> int:
     target = tmp / "hundred.jsonl"
     if target.exists():
         target.unlink()
-    writer = TraceWriter(run_id="bench", scenario="bench", path=str(target))
-    for i in range(100):
-        _harness_write(writer, i)
+    with TraceWriter(run_id="bench", scenario="bench", path=str(target)) as writer:
+        for i in range(100):
+            _harness_write(writer, i)
     return target.stat().st_size
 
 

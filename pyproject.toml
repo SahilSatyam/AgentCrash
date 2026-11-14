@@ -1,26 +1,45 @@
 [project]
 name = "agentcrash-core"
-version = "0.2.0"
-description = "Installable reliability framework for agentic workflows"
+version = "0.3.0"
+description = "Chaos engineering for tool-using AI agents: deterministic fault injection, hash-chained traces, invariant verdicts, and policy replay."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Sahil Satyam" }]
+keywords = [
+    "ai-agents",
+    "chaos-engineering",
+    "fault-injection",
+    "llm",
+    "evaluation",
+    "reliability",
+    "agentic-workflows",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "pyyaml",
     "jsonschema",
 ]
 
+[project.urls]
+Homepage = "https://github.com/SahilSatyam/AgentCrash"
+Issues = "https://github.com/SahilSatyam/AgentCrash/issues"
+
 [project.optional-dependencies]
-host-odrl = [
-    "pyshacl",
-    "dspy",
-    "numpy>=1.26",
-]
 server = [
     "fastapi",
     "uvicorn",
 ]
 dev = [
-    "agentcrash-core[host-odrl,server]",
+    "agentcrash-core[server]",
     "pytest",
     "ruff",
     "black",

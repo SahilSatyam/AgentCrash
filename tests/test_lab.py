@@ -37,13 +37,13 @@ def _post(port, path, payload):
 
 def test_evaluation_submit_and_run_detail():
     reset_store()
-    register_project("odrl-policy-engine")
-    ac = AgentCrash(WorkflowConfig(project="odrl-policy-engine", fault_injection=True))
+    register_project("checkout-agent")
+    ac = AgentCrash(WorkflowConfig(project="checkout-agent", fault_injection=True))
     ac.configure_faults({"x": {"kind": "duplicate_call", "occurrence": 1}})
-    with ac.run(name="wf") as run, run.step("validate-odrl"):
+    with ac.run(name="wf") as run, run.step("verify-order"):
         pass
     report = evaluate_trace(
-        list(ac.traces[run.run_id]), [RequiredStep("validate-odrl")], run_id=run.run_id
+        list(ac.traces[run.run_id]), [RequiredStep("verify-order")], run_id=run.run_id
     )
     assert report["verdict"] == "PASS"
     assert ingest_events(list(ac.traces[run.run_id]))["accepted"] > 0
@@ -74,7 +74,7 @@ def test_core_import_pulls_no_domain_stacks():
     code = (
         "import sys, agentcrash; "
         "bad = [m for m in sys.modules if m.split('.')[0] in "
-        "('rdflib', 'pyshacl', 'dspy', 'fastapi') or m == 'agentcrash.odrl']; "
+        "('fastapi', 'uvicorn', 'numpy')]; "
         "assert not bad, bad; print('clean')"
     )
     out = subprocess.run(

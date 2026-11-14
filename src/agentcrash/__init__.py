@@ -1,8 +1,9 @@
-"""AgentCrash — installable reliability framework for agentic workflows.
+"""AgentCrash — chaos engineering for tool-using AI agents.
 
-Core package: SDK instrumentation, versioned events, generic invariants,
-fault policies, and the control-plane server. Domain logic (ODRL, DSPy,
-SHACL) lives in host apps / extensions, never in core imports.
+Framework-neutral core: SDK instrumentation, deterministic fault
+injection, versioned events, generic invariants, recovery policies, and
+the control-plane server. Domain logic lives in the host workflow or a
+plugin package, never in core imports.
 """
 
 from agentcrash.evaluate import compare_reports, evaluate_trace
@@ -20,7 +21,7 @@ from agentcrash.server import (
     submit_evaluation,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "SCHEMA_VERSION",

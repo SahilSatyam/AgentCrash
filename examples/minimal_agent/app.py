@@ -1,4 +1,4 @@
-"""Second sample: minimal counter agent. Zero ODRL imports by construction."""
+"""Minimal counter agent: stdlib + agentcrash only, by construction."""
 
 from __future__ import annotations
 

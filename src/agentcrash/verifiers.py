@@ -3,10 +3,10 @@
 Core keeps only the checks that need no domain stack: the verifier
 registry (re-exported from :mod:`agentcrash._registry`), the generic
 write-freshness and lost-update invariants, and the trace/state loading
-plus ``run_verifiers`` helpers. ODRL-specific invariants live in the
-host/extension package (``odrl_agent.verifiers``), which imports
-:exc:`VerifierError`, :class:`FreshWriteOnly` and :class:`NoLostUpdate`
-from here. Core never imports ODRL/SHACL/DSPy stacks.
+plus ``run_verifiers`` helpers. Domain-specific invariants live in host
+or plugin packages, which import :exc:`VerifierError` and the base
+checks from here and register their own ids. Core imports no domain
+stack.
 
 Rules: verifiers read only the trace events and the state snapshot — no
 network, no wall-clock, no model calls. A violated invariant becomes
@@ -32,12 +32,7 @@ from agentcrash._registry import (
     verifier_ids,
 )
 
-#: Tool name for ODRL saves, kept as a plain string so the generic
-#: freshness check covers versioned ODRL writes without importing them.
-SAVE_ODRL = "save_odrl"
-
 __all__ = [
-    "SAVE_ODRL",
     "FreshWriteOnly",
     "NoLostUpdate",
     "TraceCorruptError",
@@ -75,16 +70,21 @@ def _mutating_calls(trace: list[dict[str, Any]], tool: str) -> list[dict[str, An
 class FreshWriteOnly:
     """Every mutating write carries a freshness proof.
 
-    A ``key_value_store`` or ``save_odrl`` write passes only when its
-    ``expected_version`` matched the store version (``version_conflict``
-    false). Stale or version-less writes fail, even though the store
-    commits them.
+    A write (``args.op == "write"``) to any versioned-store tool passes
+    only when its ``expected_version`` matched the store version
+    (``version_conflict`` false). Stale or version-less writes fail, even
+    though the store commits them. Pass ``tools`` to name your own
+    versioned-store tools; the default is ``key_value_store``.
     """
 
     id = "fresh_write_only"
 
-    #: Versioned-store tools whose writes need a freshness proof.
-    VERSIONED_TOOLS = ("key_value_store", SAVE_ODRL)
+    #: Default versioned-store tools whose writes need a freshness proof.
+    VERSIONED_TOOLS: tuple[str, ...] = ("key_value_store",)
+
+    def __init__(self, tools: tuple[str, ...] | list[str] | None = None) -> None:
+        if tools is not None:
+            self.VERSIONED_TOOLS = tuple(tools)
 
     def check(self, trace: list[dict[str, Any]], state: dict[str, Any]) -> Verdict:
         del state

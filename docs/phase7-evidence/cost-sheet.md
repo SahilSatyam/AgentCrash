@@ -25,5 +25,5 @@ From `bench.json`:
   hashing / single-pass redact+serialize before optimizing.
 - 100-step trace size **40197 bytes** vs 2 MB budget — **PASS** (~2% of budget).
 
-Fixture-backed defaults everywhere: stub/fake adapters, synthetic NL/ODRL
+Fixture-backed defaults everywhere: stub/fake adapters, synthetic
 fixtures, golden traces. Nothing in this milestone required paid inference.

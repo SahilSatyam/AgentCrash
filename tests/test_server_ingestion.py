@@ -47,9 +47,9 @@ def _code(port, path, payload=None, credential=None):
 
 def test_idempotent_ingestion_and_run_detail():
     reset_store()
-    register_project("odrl-policy-engine")
-    ac = AgentCrash(WorkflowConfig(project="odrl-policy-engine"))
-    with ac.run(name="nl-to-odrl") as run, run.step("parse-policy"):
+    register_project("checkout-agent")
+    ac = AgentCrash(WorkflowConfig(project="checkout-agent"))
+    with ac.run(name="checkout") as run, run.step("plan"):
         pass
     batch = list(ac.traces[run.run_id])
     first = ingest_events(batch)
@@ -57,9 +57,9 @@ def test_idempotent_ingestion_and_run_detail():
     second = ingest_events(batch)  # replay -> deduped
     assert second["accepted"] == 0 and second["duplicate"] == len(batch)
     detail = run_detail(run.run_id)
-    assert detail["project"] == "odrl-policy-engine"
+    assert detail["project"] == "checkout-agent"
     assert [e["seq"] for e in detail["events"]] == sorted(e["seq"] for e in detail["events"])
-    assert reliability_summary("odrl-policy-engine")["runs"] == 1
+    assert reliability_summary("checkout-agent")["runs"] == 1
 
 
 def test_http_roundtrip_multi_project():
