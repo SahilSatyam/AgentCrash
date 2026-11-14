@@ -4,6 +4,8 @@ version = "0.3.0"
 description = "Chaos engineering for tool-using AI agents: deterministic fault injection, hash-chained traces, invariant verdicts, and policy replay."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Sahil Satyam" }]
 keywords = [
     "ai-agents",

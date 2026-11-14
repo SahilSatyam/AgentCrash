@@ -3,6 +3,7 @@
 [![CI](https://github.com/SahilSatyam/AgentCrash/actions/workflows/ci.yml/badge.svg)](https://github.com/SahilSatyam/AgentCrash/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentcrash-core.svg)](https://pypi.org/project/agentcrash-core/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 Most agent evals grade the final answer. A tool-using agent can give a
 correct-looking answer while it charges a customer twice, acts on stale
@@ -102,6 +103,12 @@ agentcrash check --trace run.jsonl --plugin my_agent.invariants \
 | Contributors | `uv venv && uv pip install -e ".[dev]"` |
 
 Python 3.11+. No API key needed; the whole test suite runs offline.
+
+On Windows with Smart App Control or WDAC, unsigned console-script
+launchers (`agentcrash.exe`, and any other pip/uv-installed `.exe`) may be
+blocked. Use `python -m agentcrash ...`, which is equivalent.
+
+Upgrading from 0.2? See [CHANGELOG.md](CHANGELOG.md) for the migration table.
 
 ## Configuration
 

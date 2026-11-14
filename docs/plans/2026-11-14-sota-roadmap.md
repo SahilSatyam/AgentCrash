@@ -99,14 +99,12 @@ Exit: each invariant has a docstring stating what it proves, plus ± fixtures.
 
 ### R7 — Release hygiene (P0, before 0.3.0 upload)
 
-- Add a LICENSE file and the matching `license` field (owner decision).
-- Trusted publishing from GitHub Actions on tag; build sdist + wheel; check
-  that `lab/` and `schemas/` ship in the wheel.
-- Fix the trace-writer overhead: the bench measures ~5–6× over a bare write
-  against a 10% target.
-- Refresh `docs/adlc/` to the SDK-first design (they still describe the old
-  `run`/`diagnose`/`replay` CLI and payment scenario).
-- Decide whether to yank 0.2.0 (it shipped domain code).
+- [x] MIT `LICENSE` + `license` metadata.
+- [x] Harness overhead within NFR-PERF-01 (5.7% at 2 ms/step; see `CHANGELOG.md`).
+- [x] Migration table for the 0.3.0 breaking changes (`CHANGELOG.md`).
+- [ ] Trusted publishing from GitHub Actions on tag; build sdist + wheel.
+- [ ] Refresh `docs/adlc/` to the SDK-first design.
+- [ ] Decide whether to yank 0.2.0 (it shipped domain code).
 
 ## 4. Non-goals
 

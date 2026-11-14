@@ -99,3 +99,63 @@ def test_check_cli_knows_builtin_invariants(tmp_path, capsys):
     assert code == EXIT_VERDICT_FAIL
     assert "[FAIL] Invariant duplicate_mutating_effect" in out
     assert "[PASS] Invariant required_step:charge" in out
+
+
+def test_tracer_never_redacts_its_own_hash_fields(tmp_path):
+    from agentcrash.tracer import TraceWriter, verify_chain
+
+    path = tmp_path / "t.jsonl"
+    with TraceWriter("r1", "s", str(path)) as writer:
+        writer._prev_hash = "1234567890123456" + "a" * 48  # card-like digit run
+        event = writer.write(step=1, args={"email": "a@b.co"})
+    assert event["prev_hash"].startswith("1234567890123456")
+    assert event["args"]["email"] == "redacted@example.com"
+    with TraceWriter("r2", "s", str(path)) as writer:
+        for i in range(200):  # many real hashes: chain must always verify
+            writer.write(step=i, args={"n": i})
+    assert verify_chain(str(path))["ok"] is True
+
+
+def test_sdk_chain_is_consistent_under_threads():
+    import hashlib
+    import threading
+
+    from agentcrash import AgentCrash, WorkflowConfig
+    from agentcrash.sdk import _HASH_ENCODER
+
+    ac = AgentCrash(WorkflowConfig(project="p", max_queue=0))
+    with ac.run(name="wf") as run:
+
+        def work(n):
+            with run.step(f"s{n}") as step:
+                for i in range(50):
+                    step.record_tool("t", inputs={"i": i})
+
+        threads = [threading.Thread(target=work, args=(n,)) for n in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    events = sorted(ac.trace(run.run_id), key=lambda e: e["seq"])
+    assert [e["seq"] for e in events] == list(range(1, len(events) + 1))
+    prev = "GENESIS"
+    for event in events:
+        body = {k: v for k, v in event.items() if k != "prev_hash"}
+        prev = hashlib.sha256(f"{prev}:{_HASH_ENCODER.encode(body)}".encode()).hexdigest()
+        assert event["prev_hash"] == prev
+    assert ac.exporter.dropped == 0 and len(ac.exporter.drain()) == len(events)
+
+
+def test_sdk_accepts_non_json_tool_outputs():
+    import datetime
+
+    from agentcrash import AgentCrash, WorkflowConfig
+
+    class Obj:
+        def __str__(self):
+            return "obj"
+
+    ac = AgentCrash(WorkflowConfig(project="p"))
+    with ac.run(name="wf") as run, run.step("s") as step:
+        step.record_tool("t", outputs={"when": datetime.date(2026, 1, 1), "o": Obj()})
+    assert any(e["kind"] == "tool" for e in ac.trace(run.run_id))

@@ -31,8 +31,11 @@ uv pip install -e ".[dev]"
 pytest -q && ruff check . && black --check .
 ```
 
-On Windows, if an Application Control policy blocks `.venv\Scripts\agentcrash.exe`,
-use `python -m agentcrash` instead; the two are equivalent.
+On Windows, Smart App Control or WDAC may block unsigned console-script
+launchers such as `.venv\Scripts\agentcrash.exe` (Code Integrity event 3077).
+This guide uses `python -m agentcrash`, which is equivalent and always works.
+Do not turn Smart App Control off for this: Windows cannot turn it back on
+without a reset.
 
 ## 3. The 5-minute loop
 
