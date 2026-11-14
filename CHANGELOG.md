@@ -28,6 +28,11 @@ Chaos engineering for any agentic workflow: the core no longer ships domain code
 - `check --invariant fresh_write_only:<tool>[,<tool>]` names your store tools on the CLI.
 - `agentcrash.verifiers.tool_results(trace)`: one normalized view of tool calls from
   either trace format, for writing your own invariants.
+- `tests/test_gaps_2.py`: workflow error path, `enabled=False`, event validation and
+  invalid ingestion, `FaultSchedule` refusal and matching, `fault_injection=False`,
+  `run_verifiers` error paths, runtime verifier purity, FastAPI bearer auth, Lab
+  traversal, `load_policy`, `diff_policies`, live-patch transport and output gating.
+  Every FR in doc 03 now cites a test. Dev extra adds `httpx2` (FastAPI test client).
 - `tests/test_gaps.py`: `--scan-pii`, card redaction, `NoLostUpdate`, `check` exit codes
   2 and 3, patch rejection, report byte-stability.
 - `agentcrash check` registers the built-in invariants (`duplicate_mutating_effect`,

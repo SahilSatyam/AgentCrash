@@ -42,6 +42,7 @@ server = [
 ]
 dev = [
     "agentcrash-core[server]",
+    "httpx2",
     "pytest",
     "ruff",
     "black",
