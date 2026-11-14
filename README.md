@@ -54,8 +54,8 @@ again, and the same invariant passes.
 | SDK (`AgentCrash`) | `run` / `step` / `record_tool` / `maybe_fault`; sync and async; no-op when `AGENTCRASH_DISABLED=1` |
 | Fault injection | Seeded and reproducible; fires on tool + op + Nth call. Kinds: `timeout_after_commit`, `timeout_before_commit`, `concurrent_update`, `poisoned_doc` |
 | Traces | Versioned events, `prev_hash` chain, secrets and PII redacted at write time |
-| Invariants | Pure `(trace, state) -> Verdict`; built-ins `required_step`, `duplicate_mutating_effect`, `fresh_write_only`, `no_lost_update`; register your own |
-| `agentcrash check` | Judge a JSONL trace; JSON output, exit codes, `--plugin` for your invariants, `--scan-pii` |
+| Invariants | Pure `(trace, state) -> Verdict`; built-ins `required_step:<step>`, `duplicate_mutating_effect`, `fresh_write_only:<tools>`, `no_lost_update`; register your own |
+| `agentcrash check` | Judge a JSONL trace; JSON output, exit codes, `--plugin` for your invariants, `--verify-chain`, `--scan-pii` |
 | Recovery policy | `policy/v1` YAML + RFC 7396 merge patches; optional model-proposed patches, schema-gated |
 | Control plane | `agentcrash serve`: `/v1` API, idempotent ingestion, Lab UI, bearer auth, retention |
 

@@ -53,6 +53,7 @@ usage: agentcrash check [-h] --trace TRACE [--invariant INVARIANT]
 | `--state STATE` | no | none | `env_state/v1` JSON file passed to verifiers as `state`. |
 | `--report-out REPORT_OUT` | no | `reports/<run_id>.verdict.json` | Verdict report path. Parent directories are created. |
 | `--format {text,json}` | no | `text` | In `json` mode human lines go to stderr and the report JSON goes to stdout. |
+| `--verify-chain` | no | off | Verify the hash chain before judging: `verify_sdk_chain` for one SDK run, `verify_chain` for a `TraceWriter` file. A break exits 3 (`E_TRACE_CORRUPT`). |
 | `--scan-pii` | no | off | Scan the raw trace and state files for emails and card-like digit runs (redaction placeholders exempt). Any hit exits 1. |
 
 Built-in invariant ids, registered automatically:
@@ -61,8 +62,8 @@ Built-in invariant ids, registered automatically:
 |---|---|---|
 | `duplicate_mutating_effect` | SDK events (`kind == "tool"`, `status == "ok"`) | No tool succeeds twice with identical `inputs`. |
 | `required_step:<name>` | any event `step` | At least one event has `step == <name>`. |
-| `fresh_write_only` | `TraceWriter` envelope (`tool`, `args.op`, `detail.phase`, `detail.data`) | Every successful `write` on `key_value_store` had a matching `expected_version`. Custom tool names need a plugin that registers `FreshWriteOnly(tools=(...))`. |
-| `no_lost_update` | `injector_event` plus `state.record_versions` | Every `concurrent_update` rival value survives in the final state. Passes vacuously with no rival writer. |
+| `fresh_write_only`, `fresh_write_only:<tool>[,<tool>]` | SDK events (`kind == "tool"`: `inputs.op`, `inputs.expected_version`, `outputs.version_conflict` or `outputs.conflict`) or `TraceWriter` envelopes (`args.op`, `detail.data`) | Every successful write (`op` is `write` or absent) to the named tools (default `key_value_store`) sent an `expected_version` and got no conflict. With no matching write it passes and says `nothing to judge (vacuous)`. |
+| `no_lost_update` | SDK `fault` events (`kind: concurrent_update`, `key`, `updates`) or envelope `injector_event`, plus `state.record_versions` | Every rival value survives in the final state. Vacuous pass with no rival writer; a rival writer with no `record_versions` in `--state` exits 3. |
 
 A plugin imported with `--plugin` may override any built-in id.
 

@@ -15,6 +15,7 @@ COMMAND_FLAGS = {
         "--report-out",
         "--format",
         "--scan-pii",
+        "--verify-chain",
     ],
     "serve": [
         "--port",

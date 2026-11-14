@@ -30,7 +30,7 @@ The core is domain-free (ADR-009), so every example uses neutral tools: `payment
 | 12 | Event | One SDK record under schema v1: `schema_version, event_id, run_id, project, workflow, step, parent_step, kind, status, seq, tool, inputs, outputs, error, fault`, plus `prev_hash` once captured. | `events.make_event`, `events.validate_event`. |
 | 13 | Event `kind` | What an event records: `run_start`, `step_start`, `tool`, `fault`, `result`, `step_end`, `run_end`. | `kind="tool"`. |
 | 14 | `event_id` | Idempotency key for ingestion: `evt_<run_id>_<seq:04d>` in the SDK. The server dedupes on it. | `evt_run_ab12cd34ef56_0003`. |
-| 15 | `seq` | Positive integer ordering of events, assigned under a lock by the SDK instance (one counter per `AgentCrash`, not per run). | `seq=3`. |
+| 15 | `seq` | Positive integer ordering of events, assigned under a lock, starting at 1 for each run (one counter per `RunContext`). | `seq=3`. |
 | 16 | `prev_hash` | SDK hash-chain link: `sha256(prev_hash + ":" + canonical_json(event))`, starting at `GENESIS`. An integrity signal against accidental loss or reordering. Not tamper-proof; there is no signing in v1. | `event["prev_hash"]`. |
 | 17 | Hash chain | The linked `prev_hash` values over a trace. SDK chains use the rule above; `TraceWriter` chains use `sha256` of the previous canonical line. `verify_chain(path)` checks the latter and names the first bad event. | `tracer.verify_chain`. |
 | 18 | Trace | The ordered events of a run. In memory: `ac.trace(run_id)`. On disk: a JSONL file, one event per line, which `agentcrash check --trace` reads. | `run.jsonl`. |

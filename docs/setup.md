@@ -110,6 +110,9 @@ python -m agentcrash check --trace run.jsonl --invariant duplicate_mutating_effe
 # Your own invariants from a module (see README "Your own invariants")
 python -m agentcrash check --trace run.jsonl --plugin my_agent.invariants --invariant my_check
 
+# Verify the run's hash chain first (a break exits 3)
+python -m agentcrash check --trace run.jsonl --invariant required_step:charge --verify-chain
+
 # PII/secret guardrail over a trace (non-zero exit on hits)
 python -m agentcrash check --trace run.jsonl --invariant required_step:charge --scan-pii
 
@@ -121,7 +124,7 @@ python -m agentcrash serve --port 8901
 
 | Symptom | Fix |
 |---|---|
-| `unknown invariant '...'` | Built-ins are `duplicate_mutating_effect`, `fresh_write_only`, `no_lost_update`, `required_step:<name>`; anything else needs `--plugin` |
+| `unknown invariant '...'` | Built-ins are `duplicate_mutating_effect`, `fresh_write_only[:<tool>,...]`, `no_lost_update`, `required_step:<name>`; anything else needs `--plugin` |
 | Fault never fires | Pass `fault_injection=True` and make the boundary name in `configure_faults` match `maybe_fault` |
 | SDK seems to do nothing | `AGENTCRASH_DISABLED=1` is set |
 | `401 unauthorized` from `/v1/*` | `AGENTCRASH_API_TOKENS` is set; send `api_key` in `WorkflowConfig` |

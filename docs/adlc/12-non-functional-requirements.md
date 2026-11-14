@@ -14,7 +14,7 @@
 | ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
 | NFR-DET-01 | Deterministic modules read no wall-clock or global RNG | `clock.py`, `tracer.py`, `ledger.py`, `injector.py`, `verifiers.py` import none of `time`, `datetime`, `random` | Source tree | `pytest tests/test_acr001.py` (AST check; also its own CI step). Covers FR-51 | P0 |
-| NFR-DET-02 | Verdict report stability | Two `check` runs on the same trace, invariants and state write byte-identical report files (sorted keys, no timestamps) | Any SDK-schema trace | Run `check --report-out a.json` twice and compare file hashes (checked by hand on 0.3.0; automated test is a gap). Covers FR-31, FR-36 | P0 |
+| NFR-DET-02 | Verdict report stability | Two `check` runs on the same trace, invariants and state write byte-identical report files (sorted keys, no timestamps) | Any SDK-schema trace | Run `check --report-out a.json` twice and compare file hashes `tests/test_gaps.py::test_check_reports_are_byte_identical_across_runs`. Covers FR-31, FR-36 | P0 |
 | NFR-DET-03 | Trace evidence is order-stable | `TraceWriter` output has sorted keys, gapless `event_id`, monotonic `ts_virtual`; `verify_chain` returns `ok` on any untouched file | 200-event writer run | `tests/test_tracer.py`, `tests/test_generic_core.py::test_tracer_never_redacts_its_own_hash_fields`. Covers FR-20, FR-21 | P0 |
 | NFR-DET-04 | Virtual-clock purity | Synthetic time advances only through `VirtualClock.sleep`; negative inputs refused | `clock.py` | `tests/test_clock.py`. Covers FR-24 | P1 |
 
@@ -52,8 +52,8 @@ excluded from every budget; only harness time counts. Removed in 0.3.0: the old
 | NFR-REL-02 | Bounded memory | Export queue never exceeds `max_queue`; overflow drops oldest and is counted | `max_queue=4`, 10 steps | `tests/test_sdk.py::test_bounded_queue_drops_oldest`. Covers FR-05 | P0 |
 | NFR-REL-03 | Chain integrity under concurrency | `seq` is gapless and every `prev_hash` recomputes with 8 threads | 400 tool events | `tests/test_generic_core.py::test_sdk_chain_is_consistent_under_threads`. Covers FR-19 | P0 |
 | NFR-REL-04 | Idempotent ingestion | Re-posting a batch stores nothing new | Same batch twice | `tests/test_server_ingestion.py::test_idempotent_ingestion_and_run_detail`. Covers FR-38 | P0 |
-| NFR-REL-05 | Fail closed | A corrupt trace exits 3, a usage or config error exits 2, and neither is ever reported as PASS; a verifier returning a bad verdict object aborts instead of passing | `check` with a non-JSON trace, no `--invariant`, a missing file | Exit codes confirmed by hand on 0.3.0; automated tests are a gap. Covers FR-29, FR-33, FR-34 | P0 |
-| NFR-REL-06 | Patch gate | An invalid `policy/v1` or `policy_patch/v1` document raises before anything is applied | Unknown rule name; patch missing `source_run_id` | Confirmed by hand on 0.3.0; automated tests are a gap (roadmap R6). Covers FR-46 to FR-48 | P0 |
+| NFR-REL-05 | Fail closed | A corrupt trace exits 3, a usage or config error exits 2, and neither is ever reported as PASS; a verifier returning a bad verdict object aborts instead of passing | `check` with a non-JSON trace, no `--invariant`, a missing file | `tests/test_gaps.py::test_check_exit_2_usage_errors`, `::test_check_exit_3_corrupt_inputs`, `::test_no_lost_update_envelope_format_and_edge_cases`. Covers FR-29, FR-33, FR-34 | P0 |
+| NFR-REL-06 | Patch gate | An invalid `policy/v1` or `policy_patch/v1` document raises before anything is applied | Unknown rule name; patch missing `source_run_id` | `tests/test_gaps.py` patch tests (malformed documents, schema-breaking rules, file errors, merge). Covers FR-46 to FR-48 | P0 |
 
 ## 4. Portability and compatibility
 
@@ -70,7 +70,7 @@ excluded from every budget; only harness time counts. Removed in 0.3.0: the old
 |---|---|---|---|---|---|
 | NFR-OBS-01 | Verdict evidence | Every verdict row has a non-empty `evidence` string; a failing duplicate-effect verdict names the tool and both steps | `duplicate_mutating_effect`, `fresh_write_only` | `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants`, `::test_fresh_write_only_accepts_user_named_store_tools`. Covers FR-26, FR-27 | P0 |
 | NFR-OBS-02 | Report completeness | Report JSON always carries `api_version`, `run_id`, `verdict`, `results[]` | Any `check` run | Written by `cli.cmd_check`; `tests/test_generic_core.py::test_check_cli_knows_builtin_invariants` exercises the file write. Covers FR-36 | P0 |
-| NFR-OBS-03 | Machine-readable errors | With `--format json`, a failure prints `{"api_version", "code", "exit", "hint"}` | Missing trace, no invariants | Confirmed by hand on 0.3.0; automated test is a gap. Covers FR-33 | P1 |
+| NFR-OBS-03 | Machine-readable errors | With `--format json`, a failure prints `{"api_version", "code", "exit", "hint"}` | Missing trace, no invariants | `tests/test_gaps.py::test_check_exit_3_corrupt_inputs`. Covers FR-33 | P1 |
 
 ## 6. Usability
 
@@ -83,7 +83,7 @@ excluded from every budget; only harness time counts. Removed in 0.3.0: the old
 
 | ID | Metric | Target | Workload / conditions | Verification | Priority |
 |---|---|---|---|---|---|
-| NFR-SEC-01 | No secrets or PII in captured artifacts | Keys matching `*_token`, `*secret*`, `*key*` (except `idempotency_key`) are `[REDACTED]`; emails and card-like runs are replaced with fixed constants | Planted `api_key` input; planted email | `tests/test_sdk.py::test_deterministic_fault_and_redaction`, `tests/test_tracer.py::test_redaction_strips_secrets_but_keeps_idempotency_key`. `check --scan-pii` is the CI guard for files (test is a gap). Covers FR-15 to FR-18 | P0 |
+| NFR-SEC-01 | No secrets or PII in captured artifacts | Keys matching `*_token`, `*secret*`, `*key*` (except `idempotency_key`) are `[REDACTED]`; emails and card-like runs are replaced with fixed constants | Planted `api_key` input; planted email | `tests/test_sdk.py::test_deterministic_fault_and_redaction`, `tests/test_tracer.py::test_redaction_strips_secrets_but_keeps_idempotency_key`. `check --scan-pii` is the CI guard for files (`tests/test_gaps.py::test_scan_pii_flags_raw_pii_and_passes_redacted`, card cases in `::test_card_like_runs_are_redacted`). Covers FR-15 to FR-18 | P0 |
 | NFR-SEC-02 | Control-plane auth | With `AGENTCRASH_API_TOKENS` set, every `/v1/*` call without a listed bearer token gets 401; Lab assets stay public | Stdlib server | `tests/test_server_ingestion.py::test_auth_allowlist_gates_api_but_not_lab`. Covers FR-40 | P0 |
 | NFR-SEC-03 | Local by default | `agentcrash serve` binds `127.0.0.1`. Any other bind is an explicit `--bind` | `serve --help` | `cli.cmd_serve` default; `tests/test_cli_help.py` checks the flag is documented. Covers FR-44 | P0 |
 | NFR-SEC-04 | Model is never a trust boundary | A model can only propose a patch; verdicts come from deterministic invariants; live proposals are opt-in and schema-gated | Env var unset; invalid model output | `tests/test_generic_core.py::test_live_patch_is_opt_in`. Covers FR-50 | P0 |
@@ -99,10 +99,9 @@ It is not tamper resistance, and the control-plane store is in memory with no pe
 Gating set for a 0.3.0 release (R7): NFR-DET-01…03, NFR-PERF-01…03, NFR-REL-01…04,
 NFR-PORT-01…03, NFR-OBS-01/02, NFR-USE-01, NFR-SEC-01…04, NFR-MNT-01.
 
-Known gaps (enforced by hand or not yet by a test): NFR-DET-02 report byte-equality,
-NFR-REL-05 exit-code contract, NFR-REL-06 patch gate, NFR-OBS-03 JSON errors, and the PII scan
-in NFR-SEC-01. Each maps to adding tests under roadmap R3 (invariants and `check`) or R6
-(patch validation). Not listed because they cannot be verified today: OS coverage beyond
+Known gaps: none among the listed NFRs. NFR-DET-02, NFR-REL-05, NFR-REL-06, NFR-OBS-03 and
+the PII scan in NFR-SEC-01 are now automated in `tests/test_gaps.py`. Not listed because they
+cannot be verified today: OS coverage beyond
 Linux CI and Windows manual runs, and any latency budget for commands that do not exist.
 
 Cost ceiling: $0 infrastructure. The library and its tests run on a laptop and a free CI tier.

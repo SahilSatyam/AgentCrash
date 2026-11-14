@@ -23,6 +23,13 @@ Chaos engineering for any agentic workflow: the core no longer ships domain code
 
 ### Added
 
+- `verify_sdk_chain(events)` and `agentcrash check --verify-chain` (SDK runs and
+  `TraceWriter` files; a broken chain exits 3).
+- `check --invariant fresh_write_only:<tool>[,<tool>]` names your store tools on the CLI.
+- `agentcrash.verifiers.tool_results(trace)`: one normalized view of tool calls from
+  either trace format, for writing your own invariants.
+- `tests/test_gaps.py`: `--scan-pii`, card redaction, `NoLostUpdate`, `check` exit codes
+  2 and 3, patch rejection, report byte-stability.
 - `agentcrash check` registers the built-in invariants (`duplicate_mutating_effect`,
   `fresh_write_only`, `no_lost_update`, `required_step:<name>`), so it works without plugins.
 - `FreshWriteOnly(tools=...)` for your own versioned-store tools.
@@ -31,6 +38,14 @@ Chaos engineering for any agentic workflow: the core no longer ships domain code
 
 ### Fixed
 
+- `fresh_write_only` and `no_lost_update` only understood `TraceWriter` envelopes, so on
+  SDK traces they passed with nothing to check. Both now read SDK events too
+  (`kind: tool` / `kind: fault`); `fresh_write_only` says `nothing to judge (vacuous)`
+  when no write matched, and `no_lost_update` raises (exit 3) instead of passing when a
+  rival writer exists but `--state` has no `record_versions`.
+- SDK `seq` and the hash chain were per `AgentCrash` instance, so one run's trace could not
+  be verified alone. Both are now per run (`seq` from 1, chain from `GENESIS`).
+  Behavior change: `seq` restarts at 1 in every run.
 - `maybe_fault` always checked call 1, so `occurrence: 2+` never fired. It now counts
   calls per boundary per run (`occurrence: N` fires on exactly the Nth call); pass
   `call_index` to override. Behavior change: an `occurrence: 1` fault no longer fires

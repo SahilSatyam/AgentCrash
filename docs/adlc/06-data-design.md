@@ -116,7 +116,7 @@ Two JSON shapes exist. `check` loads any JSONL file as a list of objects, and ea
 | `parent_step` | string or null | Reserved. The SDK does not set it today. |
 | `kind` | string | SDK emits `run_start`, `run_end`, `step_start`, `step_end`, `tool`, `fault`, `result`. |
 | `status` | string | `ok` (default) or `error`. |
-| `seq` | int | Positive. Counter per `AgentCrash` instance, shared across its runs. |
+| `seq` | int | Positive, gapless, starts at 1 for each run. |
 | `tool` | string or null | Tool name for `tool` events. |
 | `inputs` | object | Redacted. `{}` when empty. |
 | `outputs` | object | Redacted. `{}` when empty. `result` events hold `{"value": str(out)[:2000]}`. |
@@ -254,5 +254,4 @@ Ingestion is idempotent on `event_id`. Run detail returns events sorted by `seq`
 |---|---|---|---|
 | 1 | One trace shape for SDK events and `TraceWriter` lines | CTO | R5 |
 | 2 | Pass `call_index` from the SDK so `occurrence > 1` fires in `maybe_fault` | CTO | R2 |
-| 3 | Make `seq` per run instead of per `AgentCrash` instance | CTO | R5 |
 | 4 | Persist the control-plane store | CTO | After R4 |

@@ -37,6 +37,7 @@ from agentcrash.tracer import redact
 #: ``default=str`` keeps non-JSON host values (objects, datetimes) from
 #: ever raising into host code.
 _HASH_ENCODER = json.JSONEncoder(sort_keys=True, check_circular=False, default=str)
+GENESIS = "GENESIS"
 
 
 @dataclass
@@ -209,6 +210,10 @@ class RunContext:
         self.run_id = f"run_{uuid4().hex[:12]}"
         self.faults_fired: list[dict[str, Any]] = []
         self._calls: dict[str, int] = {}
+        # Per-run chain: each run's trace verifies on its own
+        # (seq starts at 1, prev_hash starts at GENESIS).
+        self._seq = 0
+        self._prev_hash = GENESIS
 
     def __enter__(self) -> Self:
         self._sdk._record(self, kind="run_start", status="ok")
@@ -251,8 +256,6 @@ class AgentCrash:
             self.config.enabled = False
         self.faults = FaultPolicy(seed=self.config.seed)
         self.exporter = _Exporter(self.config)
-        self._seq = 0
-        self._prev_hash = "GENESIS"
         self._lock = threading.Lock()
         self.traces: dict[str, list[dict[str, Any]]] = {}
 
@@ -361,8 +364,8 @@ class AgentCrash:
         Sequence number and ``prev_hash`` advance together under the lock,
         so concurrent steps can never fork the chain.
         """
-        self._seq += 1
-        seq = self._seq
+        run._seq += 1
+        seq = run._seq
         event = make_event(
             event_id=f"evt_{run.run_id}_{seq:04d}",
             run_id=run.run_id,
@@ -382,8 +385,8 @@ class AgentCrash:
         # construction (pinned by tests), and the server re-validates every
         # event on ingestion. This keeps the hot path cheap.
         line = _HASH_ENCODER.encode(event)
-        digest = hashlib.sha256(f"{self._prev_hash}:{line}".encode()).hexdigest()
-        self._prev_hash = digest
+        digest = _chain_hash(run._prev_hash, line)
+        run._prev_hash = digest
         event["prev_hash"] = digest
         self.traces.setdefault(run.run_id, []).append(event)
         return event
@@ -391,3 +394,48 @@ class AgentCrash:
     def trace(self, run_id: str) -> list[dict[str, Any]]:
         """Return captured events for a run (local capture path)."""
         return list(self.traces.get(run_id, []))
+
+
+def _chain_hash(prev: str, line: str) -> str:
+    return hashlib.sha256(f"{prev}:{line}".encode()).hexdigest()
+
+
+def verify_sdk_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verify one run's SDK events on their own.
+
+    Checks, in ``seq`` order: a single ``run_id``, gapless ``seq`` from 1,
+    and the ``prev_hash`` chain, where each event's ``prev_hash`` is
+    ``sha256(<previous value>:<canonical JSON of the event without
+    prev_hash>)`` starting from ``GENESIS``. Works on events loaded from
+    JSONL. Returns ``{"ok": True, "first_bad": None, "reason": None,
+    "events": n}`` or names the first bad event.
+
+    Integrity signal for accidental loss or reordering, not tamper proof:
+    there is no signing key.
+    """
+    if not events:
+        return {"ok": False, "first_bad": None, "reason": "no events", "events": 0}
+    run_ids = {event.get("run_id") for event in events}
+    if len(run_ids) != 1:
+        return {
+            "ok": False,
+            "first_bad": None,
+            "reason": f"trace mixes {len(run_ids)} runs; verify one run at a time",
+            "events": len(events),
+        }
+    prev = GENESIS
+    ordered = sorted(events, key=lambda e: e.get("seq") if isinstance(e.get("seq"), int) else -1)
+    for expected, event in enumerate(ordered, start=1):
+        event_id = event.get("event_id")
+        if event.get("seq") != expected:
+            return {"ok": False, "first_bad": event_id, "reason": "seq gap", "events": len(events)}
+        body = {key: value for key, value in event.items() if key != "prev_hash"}
+        prev = _chain_hash(prev, _HASH_ENCODER.encode(body))
+        if event.get("prev_hash") != prev:
+            return {
+                "ok": False,
+                "first_bad": event_id,
+                "reason": "prev_hash mismatch",
+                "events": len(events),
+            }
+    return {"ok": True, "first_bad": None, "reason": None, "events": len(events)}

@@ -9,7 +9,7 @@ plugin package, never in core imports.
 from agentcrash.evaluate import compare_reports, evaluate_trace
 from agentcrash.events import SCHEMA_VERSION, make_event, validate_event
 from agentcrash.invariants import DuplicateMutatingEffect, RequiredStep
-from agentcrash.sdk import AgentCrash, FaultPolicy, RunContext, WorkflowConfig
+from agentcrash.sdk import AgentCrash, FaultPolicy, RunContext, WorkflowConfig, verify_sdk_chain
 from agentcrash.server import (
     evaluation_summary,
     ingest_events,
@@ -43,4 +43,5 @@ __all__ = [
     "run_detail",
     "submit_evaluation",
     "validate_event",
+    "verify_sdk_chain",
 ]
