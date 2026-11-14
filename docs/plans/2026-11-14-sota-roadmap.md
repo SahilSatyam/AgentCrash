@@ -102,7 +102,7 @@ Exit: each invariant has a docstring stating what it proves, plus ± fixtures.
 - [x] MIT `LICENSE` + `license` metadata.
 - [x] Harness overhead within NFR-PERF-01 (5.7% at 2 ms/step; see `CHANGELOG.md`).
 - [x] Migration table for the 0.3.0 breaking changes (`CHANGELOG.md`).
-- [ ] Trusted publishing from GitHub Actions on tag; build sdist + wheel.
+- [x] Trusted publishing from GitHub Actions on tag (`.github/workflows/release.yml`).
 - [x] Refresh `docs/adlc/` to the SDK-first design.
 - [ ] Decide whether to yank 0.2.0 (it shipped domain code).
 

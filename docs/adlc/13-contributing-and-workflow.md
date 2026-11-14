@@ -163,10 +163,24 @@ Gates (these are the CI steps in `.github/workflows/ci.yml`):
 - SemVer. The package is `0.x`, so a minor release may break the API; every break gets a
   migration row in `CHANGELOG.md`. Current version: 0.3.0 (verify with
   `python -m agentcrash --version`).
-- Release steps: gates green on the py3.11-3.13 matrix; `bench/run_overhead.py` within
-  targets; `CHANGELOG.md` entry; tag the commit on `main`. Packaging hygiene (pinning,
-  audit, upload) is roadmap R7.
-- Rollback of a release: re-tag the previous green commit and publish a patch release.
+- Release steps:
+  1. Bump `version` in `pyproject.toml` and `__version__` in `src/agentcrash/__init__.py`
+     (the release job refuses a tag that does not match both).
+  2. Add the `CHANGELOG.md` entry; check `bench/run_overhead.py` is within targets.
+  3. Merge to `main`, then create tag `v<version>` on that commit and push the tag to
+     `origin`.
+  4. `.github/workflows/release.yml` runs the gates on py3.11-3.13, builds the sdist and
+     wheel, runs `twine check --strict`, smoke-installs the wheel in a clean venv, and
+     publishes to PyPI with trusted publishing (no token stored in GitHub).
+- One-time trusted-publishing setup (owner):
+  1. pypi.org > `agentcrash-core` > Manage > Publishing > add a GitHub publisher:
+     owner `SahilSatyam`, repository `AgentCrash`, workflow `release.yml`,
+     environment `pypi`.
+  2. GitHub > repo Settings > Environments > create `pypi`. Optional: add yourself as a
+     required reviewer so every upload waits for your approval.
+- PyPI uploads are permanent: a version number can never be re-used. A bad release is
+  yanked on pypi.org and fixed with a new patch version.
+- Rollback of a release: yank it on pypi.org, then publish a fixed patch version.
   Event and policy schemas are versioned (`v1`), so a code rollback inside a major
   schema version needs no data migration.
 

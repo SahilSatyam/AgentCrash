@@ -23,6 +23,9 @@ Chaos engineering for any agentic workflow: the core no longer ships domain code
 
 ### Added
 
+- `.github/workflows/release.yml`: on a `v*` tag, run the gates (py3.11-3.13), check the
+  tag matches the package version, build sdist + wheel, `twine check --strict`,
+  smoke-install the wheel, and publish to PyPI via trusted publishing (OIDC, no token).
 - `verify_sdk_chain(events)` and `agentcrash check --verify-chain` (SDK runs and
   `TraceWriter` files; a broken chain exits 3).
 - `check --invariant fresh_write_only:<tool>[,<tool>]` names your store tools on the CLI.
