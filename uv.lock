@@ -8,7 +8,7 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agentcrash"
+name = "agentcrash-core"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
@@ -41,7 +41,7 @@ server = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agentcrash", extras = ["host-odrl", "server"], marker = "extra == 'dev'" },
+    { name = "agentcrash-core", extras = ["host-odrl", "server"], marker = "extra == 'dev'" },
     { name = "black", marker = "extra == 'dev'" },
     { name = "dspy", marker = "extra == 'host-odrl'" },
     { name = "fastapi", marker = "extra == 'server'" },

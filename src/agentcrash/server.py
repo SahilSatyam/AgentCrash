@@ -185,9 +185,9 @@ def prune_runs(
     Order for keep-last-N is ingestion order. Removes the dropped runs'
     events and evaluations. ``keep_last_n`` must be a non-negative int
     (0 drops every run); ``older_than_days`` must be a non-negative
-    number of days (runs created before the cutoff are dropped, even
-    when ``keep_last_n`` would keep them). At least one criterion is
-    required.
+    number of days (runs created at or before the cutoff are dropped,
+    even when ``keep_last_n`` would keep them). At least one criterion
+    is required.
     """
     if keep_last_n is None and older_than_days is None:
         raise ValueError("prune_runs needs keep_last_n and/or older_than_days")
@@ -202,7 +202,7 @@ def prune_runs(
         ordered = [r for r in _STORE["runs"].values() if r.get("project") == project]
         drop_ids: set[str] = set()
         if older_than_days is not None:
-            drop_ids.update(r["run_id"] for r in ordered if r.get("created_at", 0) < cutoff)
+            drop_ids.update(r["run_id"] for r in ordered if r.get("created_at", 0) <= cutoff)
         survivors = [r["run_id"] for r in ordered if r["run_id"] not in drop_ids]
         if keep_last_n is not None:
             drop_ids.update(survivors[: max(0, len(survivors) - keep_last_n)])
