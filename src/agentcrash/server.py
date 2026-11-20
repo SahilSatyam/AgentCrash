@@ -263,8 +263,7 @@ class SQLiteStorage:
             self._conn.execute("PRAGMA journal_mode = WAL;")
             self._conn.execute("PRAGMA synchronous = NORMAL;")
             self._conn.execute("PRAGMA foreign_keys = ON;")
-            self._conn.executescript(
-                """
+            self._conn.executescript("""
                 CREATE TABLE IF NOT EXISTS projects (
                     project TEXT PRIMARY KEY,
                     environment TEXT,
@@ -295,8 +294,7 @@ class SQLiteStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_run_id_seq ON events(run_id, seq);
                 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project, created_at);
-                """
-            )
+                """)
 
     def reset(self) -> None:
         with self._lock, self._conn:
@@ -555,8 +553,7 @@ class PostgresStorage:
 
     def _init_db(self) -> None:
         with self._lock, self._conn.cursor() as cur:
-            cur.execute(
-                """
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS projects (
                     project TEXT PRIMARY KEY,
                     environment TEXT,
@@ -587,8 +584,7 @@ class PostgresStorage:
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_run_id_seq ON events(run_id, seq);
                 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project, created_at);
-                """
-            )
+                """)
 
     def reset(self) -> None:
         with self._lock, self._conn.cursor() as cur:
