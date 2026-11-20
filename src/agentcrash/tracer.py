@@ -91,6 +91,7 @@ def _scrub_str(value: str) -> str:
         len(value) >= _MIN_CARD_DIGITS
         and len(value) - len(value.translate(_DROP_DIGITS)) >= _MIN_CARD_DIGITS
     ):
+
         def _replace_card(m: re.Match[str]) -> str:
             matched = m.group(0)
             return REDACTED_CARD if _luhn_checksum(matched) else matched
@@ -222,9 +223,7 @@ class TraceWriter:
         }
         kb = key_bytes(self.signing_key)
         if kb is not None:
-            event["sig"] = hmac.new(
-                kb, self._prev_hash.encode(), hashlib.sha256
-            ).hexdigest()
+            event["sig"] = hmac.new(kb, self._prev_hash.encode(), hashlib.sha256).hexdigest()
         line = _canonical(event)
         # The detail is a slice of the line, so a small line needs no
         # separate detail size check (saves one full serialization).
@@ -274,9 +273,7 @@ def verify_chain(path: str, signing_key: str | bytes | None = None) -> dict[str,
             if event.get("prev_hash") != prev_hash:
                 return {"ok": False, "first_bad": event_id, "reason": "prev_hash mismatch"}
             if kb is not None:
-                expected_sig = hmac.new(
-                    kb, prev_hash.encode(), hashlib.sha256
-                ).hexdigest()
+                expected_sig = hmac.new(kb, prev_hash.encode(), hashlib.sha256).hexdigest()
                 if event.get("sig") != expected_sig:
                     return {"ok": False, "first_bad": event_id, "reason": "signature mismatch"}
             ts = event.get("ts_virtual")

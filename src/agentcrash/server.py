@@ -42,40 +42,32 @@ def _validate_ingest_event(event: Any) -> tuple[bool, str | None]:
 class Storage(Protocol):
     """Protocol for AgentCrash control-plane storage backends."""
 
-    def register_project(self, project: str, environment: str = "development") -> dict[str, Any]:
-        ...
+    def register_project(
+        self, project: str, environment: str = "development"
+    ) -> dict[str, Any]: ...
 
-    def ingest_events(self, events: list[dict[str, Any]]) -> dict[str, Any]:
-        ...
+    def ingest_events(self, events: list[dict[str, Any]]) -> dict[str, Any]: ...
 
-    def submit_evaluation(self, run_id: str, results: list[dict[str, Any]]) -> dict[str, Any]:
-        ...
+    def submit_evaluation(self, run_id: str, results: list[dict[str, Any]]) -> dict[str, Any]: ...
 
-    def evaluation_summary(self, run_id: str) -> dict[str, Any] | None:
-        ...
+    def evaluation_summary(self, run_id: str) -> dict[str, Any] | None: ...
 
-    def run_detail(self, run_id: str) -> dict[str, Any] | None:
-        ...
+    def run_detail(self, run_id: str) -> dict[str, Any] | None: ...
 
-    def list_runs(self, project: str = "") -> list[dict[str, Any]]:
-        ...
+    def list_runs(self, project: str = "") -> list[dict[str, Any]]: ...
 
     def prune_runs(
         self,
         project: str,
         keep_last_n: int | None = None,
         older_than_days: float | None = None,
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
-    def reliability_summary(self, project: str) -> dict[str, Any]:
-        ...
+    def reliability_summary(self, project: str) -> dict[str, Any]: ...
 
-    def reset(self) -> None:
-        ...
+    def reset(self) -> None: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 class MemoryStorage:
@@ -172,7 +164,11 @@ class MemoryStorage:
                 return None
             rows = list(verdicts.values())
         passed = sum(1 for v in rows if v["passed"])
-        return {"run_id": run_id, "results": rows, "verdict": "PASS" if passed == len(rows) else "FAIL"}
+        return {
+            "run_id": run_id,
+            "results": rows,
+            "verdict": "PASS" if passed == len(rows) else "FAIL",
+        }
 
     def run_detail(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -195,9 +191,7 @@ class MemoryStorage:
 
     def list_runs(self, project: str = "") -> list[dict[str, Any]]:
         with self._lock:
-            runs = [
-                r for r in self._runs.values() if not project or r.get("project") == project
-            ]
+            runs = [r for r in self._runs.values() if not project or r.get("project") == project]
             return [_run_row(r) for r in runs]
 
     def prune_runs(
@@ -380,7 +374,12 @@ class SQLiteStorage:
                 self._conn.execute(
                     "INSERT INTO evaluations (run_id, invariant_id, passed, evidence) VALUES (?, ?, ?, ?) "
                     "ON CONFLICT(run_id, invariant_id) DO UPDATE SET passed=excluded.passed, evidence=excluded.evidence;",
-                    (run_id, str(row["id"]), 1 if row.get("passed") else 0, str(row.get("evidence", ""))),
+                    (
+                        run_id,
+                        str(row["id"]),
+                        1 if row.get("passed") else 0,
+                        str(row.get("evidence", "")),
+                    ),
                 )
             rows = self._conn.execute(
                 "SELECT invariant_id, passed, evidence FROM evaluations WHERE run_id = ?;",
@@ -405,7 +404,11 @@ class SQLiteStorage:
             return None
         clean = [{"id": r[0], "passed": bool(r[1]), "evidence": r[2]} for r in rows]
         passed = sum(1 for r in clean if r["passed"])
-        return {"run_id": run_id, "results": clean, "verdict": "PASS" if passed == len(clean) else "FAIL"}
+        return {
+            "run_id": run_id,
+            "results": clean,
+            "verdict": "PASS" if passed == len(clean) else "FAIL",
+        }
 
     def run_detail(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -759,14 +762,16 @@ class PostgresStorage:
                 else:
                     passed = all(ev[0] for ev in eval_rows)
                     verdict = "PASS" if passed else "FAIL"
-                out.append({
-                    "run_id": rid,
-                    "project": r[1],
-                    "workflow": r[2],
-                    "created_at": r[3],
-                    "events": ev_count,
-                    "verdict": verdict,
-                })
+                out.append(
+                    {
+                        "run_id": rid,
+                        "project": r[1],
+                        "workflow": r[2],
+                        "created_at": r[3],
+                        "events": ev_count,
+                        "verdict": verdict,
+                    }
+                )
             return out
 
     def prune_runs(
@@ -988,7 +993,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "project is required"})
                 return
             self._send(
-                200, self.storage.register_project(body["project"], body.get("environment", "development"))
+                200,
+                self.storage.register_project(
+                    body["project"], body.get("environment", "development")
+                ),
             )
         elif parsed.path == "/v1/events":
             body = self._read_json()
@@ -1003,7 +1011,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(400, {"error": "run_id and results are required"})
                 return
             try:
-                self._send(200, self.storage.submit_evaluation(body["run_id"], body.get("results", [])))
+                self._send(
+                    200, self.storage.submit_evaluation(body["run_id"], body.get("results", []))
+                )
             except (TypeError, ValueError) as exc:
                 self._send(400, {"error": str(exc)})
         elif parsed.path == "/v1/admin/prune":
@@ -1170,7 +1180,9 @@ def create_fastapi_app(storage: Storage | None = None) -> Any:
         ):
             raise HTTPException(400, "project and keep_last_n and/or older_than_days required")
         try:
-            return st.prune_runs(body["project"], body.get("keep_last_n"), body.get("older_than_days"))
+            return st.prune_runs(
+                body["project"], body.get("keep_last_n"), body.get("older_than_days")
+            )
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
 

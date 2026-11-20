@@ -160,4 +160,3 @@ def test_jwt_and_cloud_token_redaction() -> None:
     res_ghp = redact({"gh": ghp_token})
     assert ghp_token not in res_ghp["gh"]
     assert REDACTED in res_ghp["gh"]
-

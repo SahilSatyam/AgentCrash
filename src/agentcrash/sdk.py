@@ -560,9 +560,7 @@ class AgentCrash:
         kb = key_bytes(self.config.signing_key)
         if kb is not None:
             # Note: SDK signs the new digest (incorporating current event line).
-            event["sig"] = hmac.new(
-                kb, digest.encode(), hashlib.sha256
-            ).hexdigest()
+            event["sig"] = hmac.new(kb, digest.encode(), hashlib.sha256).hexdigest()
         self.traces.setdefault(run.run_id, []).append(event)
         return event
 
@@ -619,9 +617,7 @@ def verify_sdk_chain(
                 "events": len(events),
             }
         if kb is not None:
-            expected_sig = hmac.new(
-                kb, prev.encode(), hashlib.sha256
-            ).hexdigest()
+            expected_sig = hmac.new(kb, prev.encode(), hashlib.sha256).hexdigest()
             if event.get("sig") != expected_sig:
                 return {
                     "ok": False,
@@ -663,9 +659,7 @@ def to_otel_spans(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         error = event.get("error")
         fault = event.get("fault")
 
-        span_id = hashlib.sha256(
-            f"{run_id}:{seq}:{kind}:{step}:{tool}".encode()
-        ).hexdigest()[:16]
+        span_id = hashlib.sha256(f"{run_id}:{seq}:{kind}:{step}:{tool}".encode()).hexdigest()[:16]
 
         if kind in ("step_start", "step_end") and step:
             span_name = f"step:{step}"
@@ -711,15 +705,17 @@ def to_otel_spans(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "description": str(error or ""),
         }
 
-        spans.append({
-            "name": span_name,
-            "trace_id": trace_id,
-            "span_id": span_id,
-            "parent_span_id": parent_id,
-            "traceparent": traceparent,
-            "attributes": attributes,
-            "status": status_obj,
-        })
+        spans.append(
+            {
+                "name": span_name,
+                "trace_id": trace_id,
+                "span_id": span_id,
+                "parent_span_id": parent_id,
+                "traceparent": traceparent,
+                "attributes": attributes,
+                "status": status_obj,
+            }
+        )
 
     return spans
 

@@ -99,7 +99,9 @@ def test_tracewriter_hmac_signing_and_verify_chain(tmp_path: Path) -> None:
     assert bad["reason"] == "signature mismatch"
 
 
-def test_cli_check_verify_chain_with_signing_key(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+def test_cli_check_verify_chain_with_signing_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
     key = "cli-key-123"
     trace_path = tmp_path / "sdk_signed.jsonl"
     ac = AgentCrash(WorkflowConfig(project="cli_p", signing_key=key))
@@ -110,23 +112,33 @@ def test_cli_check_verify_chain_with_signing_key(tmp_path: Path, capsys: pytest.
     trace_path.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
 
     # CLI check with valid signing key
-    exit_code = main([
-        "check",
-        "--trace", str(trace_path),
-        "--invariant", "required_step:s1",
-        "--signing-key", key,
-    ])
+    exit_code = main(
+        [
+            "check",
+            "--trace",
+            str(trace_path),
+            "--invariant",
+            "required_step:s1",
+            "--signing-key",
+            key,
+        ]
+    )
     assert exit_code == EXIT_OK
     out = capsys.readouterr().out
     assert "chain: ok" in out
 
     # CLI check with invalid signing key -> exits EXIT_CORRUPT
-    exit_code_bad = main([
-        "check",
-        "--trace", str(trace_path),
-        "--invariant", "required_step:s1",
-        "--signing-key", "wrong-cli-key",
-    ])
+    exit_code_bad = main(
+        [
+            "check",
+            "--trace",
+            str(trace_path),
+            "--invariant",
+            "required_step:s1",
+            "--signing-key",
+            "wrong-cli-key",
+        ]
+    )
     assert exit_code_bad == EXIT_CORRUPT
 
 
@@ -232,7 +244,14 @@ def test_export_otel_spans_with_mock_tracer() -> None:
 
 def test_export_otel_spans_missing_dep_raises_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
     # If opentelemetry is not present and tracer is None, informative error is raised
-    monkeypatch.setattr("builtins.__import__", lambda name, *args, **kwargs: (_ for _ in ()).throw(ImportError("No module named 'opentelemetry'")) if "opentelemetry" in name else __import__(name, *args, **kwargs))
+    monkeypatch.setattr(
+        "builtins.__import__",
+        lambda name, *args, **kwargs: (
+            (_ for _ in ()).throw(ImportError("No module named 'opentelemetry'"))
+            if "opentelemetry" in name
+            else __import__(name, *args, **kwargs)
+        ),
+    )
     with pytest.raises(ImportError, match="OpenTelemetry is not installed"):
         export_otel_spans([{"run_id": "r1", "seq": 1, "kind": "run_start"}], tracer=None)
 
@@ -245,9 +264,12 @@ def test_postgres_storage_conforms_to_protocol() -> None:
     assert issubclass(PostgresStorage, Storage)
 
 
-def test_postgres_storage_missing_driver_raises_import_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_postgres_storage_missing_driver_raises_import_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Simulating driver missing
     import builtins
+
     orig_import = builtins.__import__
 
     def mock_import(name: str, *args: object, **kwargs: object) -> object:
@@ -269,20 +291,20 @@ def test_postgres_storage_operations_with_mock_connection() -> None:
     # Setup return values for mock cursor
     mock_cur.fetchone.side_effect = [
         ("my_proj", "production", 0),  # register_project
-        None,                          # ingest_events (SELECT 1 FROM events)
-        ("my_proj", "my_wf"),          # run_detail run_row
-        (1,),                          # list_runs ev_count
-        (0,),                          # prune_runs kept count
+        None,  # ingest_events (SELECT 1 FROM events)
+        ("my_proj", "my_wf"),  # run_detail run_row
+        (1,),  # list_runs ev_count
+        (0,),  # prune_runs kept count
     ]
     mock_cur.fetchall.side_effect = [
-        [("inv1", 1, "evidence ok")],                               # submit_evaluation
-        [("inv1", 1, "evidence ok")],                               # evaluation_summary
-        [(json.dumps({"seq": 1, "event_id": "e1"}),)],              # run_detail ev_rows
-        [("inv1", 1, "evidence ok")],                               # run_detail eval_rows
-        [("run_1", "my_proj", "my_wf", 1000.0)],                   # list_runs runs
-        [(1,)],                                                     # list_runs eval_rows
-        [("run_1", 500.0)],                                         # prune_runs rows
-        [("run_1",)],                                               # reliability_summary runs
+        [("inv1", 1, "evidence ok")],  # submit_evaluation
+        [("inv1", 1, "evidence ok")],  # evaluation_summary
+        [(json.dumps({"seq": 1, "event_id": "e1"}),)],  # run_detail ev_rows
+        [("inv1", 1, "evidence ok")],  # run_detail eval_rows
+        [("run_1", "my_proj", "my_wf", 1000.0)],  # list_runs runs
+        [(1,)],  # list_runs eval_rows
+        [("run_1", 500.0)],  # prune_runs rows
+        [("run_1",)],  # reliability_summary runs
         [(json.dumps({"seq": 1, "fault": {"kind": "timeout"}}),)],  # reliability_summary events
     ]
 
@@ -294,23 +316,27 @@ def test_postgres_storage_operations_with_mock_connection() -> None:
     assert reg["project"] == "my_proj"
 
     # ingest_events
-    ingest = storage.ingest_events([
-        {
-            "schema_version": 1,
-            "event_id": "e1",
-            "run_id": "r1",
-            "project": "my_proj",
-            "workflow": "wf",
-            "step": "s1",
-            "kind": "tool",
-            "status": "ok",
-            "seq": 1,
-        }
-    ])
+    ingest = storage.ingest_events(
+        [
+            {
+                "schema_version": 1,
+                "event_id": "e1",
+                "run_id": "r1",
+                "project": "my_proj",
+                "workflow": "wf",
+                "step": "s1",
+                "kind": "tool",
+                "status": "ok",
+                "seq": 1,
+            }
+        ]
+    )
     assert ingest["accepted"] == 1
 
     # submit_evaluation
-    sub = storage.submit_evaluation("r1", [{"id": "inv1", "passed": True, "evidence": "evidence ok"}])
+    sub = storage.submit_evaluation(
+        "r1", [{"id": "inv1", "passed": True, "evidence": "evidence ok"}]
+    )
     assert sub["verdict"] == "PASS"
 
     # evaluation_summary
@@ -399,12 +425,28 @@ def test_fuzz_and_shrink_with_invariants() -> None:
         events = [
             {"seq": 1, "run_id": "r1", "kind": "run_start"},
             {"seq": 2, "run_id": "r1", "kind": "tool", "tool": "auth", "status": "ok"},
-            {"seq": 3, "run_id": "r1", "kind": "tool", "tool": "charge", "inputs": {"id": "ord1"}, "outputs": {"ok": True}, "status": "ok"},
+            {
+                "seq": 3,
+                "run_id": "r1",
+                "kind": "tool",
+                "tool": "charge",
+                "inputs": {"id": "ord1"},
+                "outputs": {"ok": True},
+                "status": "ok",
+            },
         ]
         # In case of timeout_after_commit on charge, a retry duplicate occurs
         if "charge" in sched and sched["charge"]["kind"] == "timeout_after_commit":
             events.append(
-                {"seq": 4, "run_id": "r1", "kind": "tool", "tool": "charge", "inputs": {"id": "ord1"}, "outputs": {"ok": True}, "status": "ok"}
+                {
+                    "seq": 4,
+                    "run_id": "r1",
+                    "kind": "tool",
+                    "tool": "charge",
+                    "inputs": {"id": "ord1"},
+                    "outputs": {"ok": True},
+                    "status": "ok",
+                }
             )
         return events, {}
 
@@ -427,7 +469,14 @@ def test_fuzz_and_shrink_with_invariants() -> None:
     baseline_report = evaluate_trace(
         [
             {"seq": 1, "run_id": "r0", "kind": "run_start"},
-            {"seq": 2, "run_id": "r0", "kind": "tool", "tool": "charge", "inputs": {"id": "ord1"}, "outputs": {"ok": True}},
+            {
+                "seq": 2,
+                "run_id": "r0",
+                "kind": "tool",
+                "tool": "charge",
+                "inputs": {"id": "ord1"},
+                "outputs": {"ok": True},
+            },
         ],
         invariants,
     )
@@ -436,24 +485,40 @@ def test_fuzz_and_shrink_with_invariants() -> None:
     assert "duplicate_mutating_effect" in diff["regressions"]
 
 
-def test_cli_check_fuzz_finds_violation_and_shrinks(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+def test_cli_check_fuzz_finds_violation_and_shrinks(
+    tmp_path: Path, capsys: pytest.CaptureFixture
+) -> None:
     trace_path = tmp_path / "base_trace.jsonl"
     events = [
         {"seq": 1, "run_id": "r_fuzz", "kind": "run_start"},
-        {"seq": 2, "run_id": "r_fuzz", "kind": "tool", "tool": "orders_db", "inputs": {"item": "A"}, "outputs": {"version": 1}},
+        {
+            "seq": 2,
+            "run_id": "r_fuzz",
+            "kind": "tool",
+            "tool": "orders_db",
+            "inputs": {"item": "A"},
+            "outputs": {"version": 1},
+        },
     ]
     trace_path.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
 
     # When fuzzing with NoLostUpdate invariant, concurrent_update on orders_db will trigger violation
-    exit_code = main([
-        "check",
-        "--trace", str(trace_path),
-        "--invariant", "no_lost_update",
-        "--fuzz",
-        "--max-cases", "5",
-        "--seed", "42",
-        "--report-out", str(tmp_path / "fuzz_rep.json"),
-    ])
+    exit_code = main(
+        [
+            "check",
+            "--trace",
+            str(trace_path),
+            "--invariant",
+            "no_lost_update",
+            "--fuzz",
+            "--max-cases",
+            "5",
+            "--seed",
+            "42",
+            "--report-out",
+            str(tmp_path / "fuzz_rep.json"),
+        ]
+    )
 
     assert exit_code == EXIT_VERDICT_FAIL
     out = capsys.readouterr().out
@@ -577,11 +642,9 @@ def test_occurrence_all_fires_always_in_policy_and_schedule() -> None:
             assert out["text"] == "[POISONED]"
 
     # 3. FaultSchedule with occurrence: "all"
-    sched = FaultSchedule([
-        {"kind": "timeout_after_commit", "params": {"tool": "search", "occurrence": "all"}}
-    ])
+    sched = FaultSchedule(
+        [{"kind": "timeout_after_commit", "params": {"tool": "search", "occurrence": "all"}}]
+    )
     assert sched.find_call_fault("search", None, 1) is not None
     assert sched.find_call_fault("search", None, 2) is not None
     assert sched.find_call_fault("search", None, 100) is not None
-
-

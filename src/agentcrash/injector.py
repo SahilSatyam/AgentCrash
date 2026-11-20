@@ -250,8 +250,6 @@ class FaultSchedule:
         """Return the ``poisoned_doc`` fault firing at ``step``, if any."""
         return self.find_step_fault(step, tool, {"poisoned_doc"})
 
-    def poison_for_call(
-        self, tool: str, op: str | None, occurrence: int
-    ) -> dict[str, Any] | None:
+    def poison_for_call(self, tool: str, op: str | None, occurrence: int) -> dict[str, Any] | None:
         """Return the poisoned-doc fault firing on this tool call, if any."""
         return self.find_call_fault(tool, op, occurrence, {"poisoned_doc"})

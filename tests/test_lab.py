@@ -175,4 +175,3 @@ def test_lab_restart_persistence_and_runs_listing(tmp_path):
         server2.shutdown()
         server2.server_close()
         store2.close()
-

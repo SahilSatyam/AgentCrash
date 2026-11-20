@@ -74,7 +74,7 @@ def validate_policy_data(data: Any, source: str = "policy") -> dict[str, Any]:
         raise PolicyError(f"{source} must contain a YAML mapping")
     if data.get("schema_version") != "policy/v1":
         raise PolicyError(
-            f"{source} schema_version must be 'policy/v1' " f"(got {data.get('schema_version')!r})"
+            f"{source} schema_version must be 'policy/v1' (got {data.get('schema_version')!r})"
         )
     try:
         jsonschema.validate(data, _schema("policy.json"))

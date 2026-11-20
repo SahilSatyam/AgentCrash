@@ -212,10 +212,12 @@ def simulate_trace_faults(
                     outputs["conflict"] = True
                     outputs["version"] = int(outputs.get("version", 1)) + 1
                     ev["outputs"] = outputs
-                    state["record_versions"].append({
-                        "record": key,
-                        "value": {"status": "stale_overwritten"},
-                    })
+                    state["record_versions"].append(
+                        {
+                            "record": key,
+                            "value": {"status": "stale_overwritten"},
+                        }
+                    )
                 elif kind == "poisoned_doc":
                     outputs = (
                         dict(ev.get("outputs", {})) if isinstance(ev.get("outputs"), dict) else {}

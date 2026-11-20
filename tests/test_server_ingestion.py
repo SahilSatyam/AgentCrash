@@ -245,4 +245,3 @@ def test_sqlite_restart_persistence_and_duplicate_replay(tmp_path):
         server2.shutdown()
         server2.server_close()
         store2.close()
-
