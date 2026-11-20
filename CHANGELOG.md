@@ -3,7 +3,28 @@
 All notable changes to `agentcrash-core`. Versions follow [SemVer](https://semver.org/);
 while the version is `0.x`, minor releases may break the API.
 
-## 0.3.0 — unreleased
+## 0.4.0
+
+Production chaos platform: non-blocking async export with backpressure counters,
+durable control-plane storage (SQLite WAL default, PostgreSQL adapter), active
+`poisoned_doc` and `concurrent_update` faults with seeded replay, hardened PII
+redaction (Luhn + JWT/cloud tokens), HMAC-signed tamper-evident chains, optional
+OpenTelemetry span export, and a seeded fault-schedule fuzzer with shrinking
+(`agentcrash check --fuzz`).
+
+### Compatibility notes
+
+- `flush()` is best-effort: on send failure it preserves queued events, records
+  the failure, and returns early instead of stalling callers.
+- SDK signing covers the new chain digest; `TraceWriter` signing covers the
+  previous link. Each verifier matches its writer; `check --verify-chain` and
+  `--signing-key` dispatch on trace schema.
+- `simulate_trace_faults` treats `occurrence: "all"` as fire-always. `FaultPolicy`
+  and `FaultSchedule` understand `"all"` the same way.
+- No new required core dependencies. OpenTelemetry and PostgreSQL drivers stay
+  optional extras with lazy imports.
+
+## 0.3.0
 
 Chaos engineering for any agentic workflow: the core no longer ships domain code.
 
