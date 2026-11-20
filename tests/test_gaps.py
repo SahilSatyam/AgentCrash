@@ -223,9 +223,27 @@ def test_card_like_runs_are_redacted(text):
     assert "4242 4242" not in out and "378282246310005" not in out
 
 
-@pytest.mark.parametrize("text", ["order 12345", "2026-11-14", "v1.2.3", "id 123456789012"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "order 12345",
+        "2026-11-14",
+        "v1.2.3",
+        "id 123456789012",
+        "order 1234567890123456",
+    ],
+)
 def test_short_digit_runs_are_left_alone(text):
     assert redact({"note": text})["note"] == text
+
+
+def test_scan_pii_flags_raw_jwt_and_cloud_tokens(tmp_path, capsys):
+    jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjbE_qGsWTODk_wFv_I"
+    raw = _write_jsonl(tmp_path / "raw_jwt.jsonl", [{"step": "s", "auth": f"Bearer {jwt}"}])
+    code = _check(tmp_path, "--trace", str(raw), "--invariant", "required_step:s", "--scan-pii")
+    assert code == EXIT_VERDICT_FAIL
+    out = capsys.readouterr().out
+    assert "jwt" in out
 
 
 # -- 3b. check exit codes 2 and 3 ----------------------------------------

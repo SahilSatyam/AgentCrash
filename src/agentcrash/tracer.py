@@ -11,6 +11,7 @@ from __future__ import annotations
 import fnmatch
 import functools
 import hashlib
+import hmac
 import json
 import re
 from typing import Any, Self
@@ -26,6 +27,22 @@ _EXEMPT_KEYS = {"idempotency_key"}
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _CARD_RE = re.compile(r"\b\d(?:[ \-]?\d){12,18}\b")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_CLOUD_TOKEN_RE = re.compile(
+    r"\b(?:(?:sk|pk|glpat|xoxb|xoxp)[-_]|(?:ghp|gho)_|AKIA|ASIA|ya29)[-_A-Za-z0-9]{8,}\b"
+)
+_CLOUD_PREFIXES = (
+    "sk-",
+    "pk-",
+    "ghp_",
+    "gho_",
+    "glpat-",
+    "xoxb-",
+    "xoxp-",
+    "AKIA",
+    "ASIA",
+    "ya29",
+)
 
 OUTCOMES = {"success", "timeout", "error", "blocked", "info"}
 
@@ -39,6 +56,22 @@ _MIN_CARD_DIGITS = 13
 _DROP_DIGITS = str.maketrans("", "", "0123456789")
 
 
+def _luhn_checksum(digits: str) -> bool:
+    clean = re.sub(r"\D", "", digits)
+    if not (13 <= len(clean) <= 19):
+        return False
+    total = 0
+    reverse_digits = clean[::-1]
+    for i, c in enumerate(reverse_digits):
+        d = ord(c) - ord("0")
+        if i % 2 == 1:
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return total % 10 == 0
+
+
 @functools.lru_cache(maxsize=4096)
 def _is_sensitive_key(key: str) -> bool:
     if key in _EXEMPT_KEYS:
@@ -47,14 +80,22 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _scrub_str(value: str) -> str:
-    # Cheap prechecks skip both regexes for the common clean string.
+    # Cheap prechecks skip heavy scans for clean strings
     if "@" in value:
         value = _EMAIL_RE.sub(REDACTED_EMAIL, value)
+    if "eyJ" in value:
+        value = _JWT_RE.sub(REDACTED, value)
+    if any(p in value for p in _CLOUD_PREFIXES):
+        value = _CLOUD_TOKEN_RE.sub(REDACTED, value)
     if (
         len(value) >= _MIN_CARD_DIGITS
         and len(value) - len(value.translate(_DROP_DIGITS)) >= _MIN_CARD_DIGITS
     ):
-        value = _CARD_RE.sub(REDACTED_CARD, value)
+        def _replace_card(m: re.Match[str]) -> str:
+            matched = m.group(0)
+            return REDACTED_CARD if _luhn_checksum(matched) else matched
+
+        value = _CARD_RE.sub(_replace_card, value)
     return value
 
 
@@ -102,13 +143,34 @@ def compute_run_id(scenario_text: str, policy_text: str, seed: int) -> str:
     return digest.hexdigest()[:16]
 
 
-class TraceWriter:
-    """Write gapless, hash-chained, redacted trace events to a JSONL file."""
+def key_bytes(key: str | bytes | None) -> bytes | None:
+    """Normalize a signing key (str or bytes) to bytes, or None."""
+    if key is None:
+        return None
+    return key.encode() if isinstance(key, str) else key
 
-    def __init__(self, run_id: str, scenario: str, path: str) -> None:
+
+class TraceWriter:
+    """Write gapless, hash-chained, redacted trace events to a JSONL file.
+
+    .. note:: Signing Semantics
+       When ``signing_key`` is configured, ``TraceWriter`` computes HMAC-SHA256
+       over the old ``prev_hash`` link and stores it in ``event["sig"]`` before
+       canonicalizing and writing the line. The SHA256 of the entire line
+       (including ``sig``) then becomes the next event's ``prev_hash``.
+    """
+
+    def __init__(
+        self,
+        run_id: str,
+        scenario: str,
+        path: str,
+        signing_key: str | bytes | None = None,
+    ) -> None:
         self.run_id = run_id
         self.scenario = scenario
         self.path = path
+        self.signing_key = signing_key
         self._seq = 0
         self._t = 0
         self._prev_hash = "GENESIS"
@@ -158,6 +220,11 @@ class TraceWriter:
             "policy_decision": redact(policy_decision),
             "detail": redact(detail if detail is not None else {}),
         }
+        kb = key_bytes(self.signing_key)
+        if kb is not None:
+            event["sig"] = hmac.new(
+                kb, self._prev_hash.encode(), hashlib.sha256
+            ).hexdigest()
         line = _canonical(event)
         # The detail is a slice of the line, so a small line needs no
         # separate detail size check (saves one full serialization).
@@ -180,15 +247,17 @@ class TraceWriter:
         self.close()
 
 
-def verify_chain(path: str) -> dict[str, Any]:
+def verify_chain(path: str, signing_key: str | bytes | None = None) -> dict[str, Any]:
     """Verify gapless ids, monotonic ts, and the prev_hash chain of a trace.
 
+    When ``signing_key`` is supplied, HMAC-SHA256 signatures are also verified.
     Returns ``{"ok": True, ...}`` or ``{"ok": False, "first_bad": event_id,
     "reason": ...}`` naming the first bad link.
     """
     prev_hash = "GENESIS"
     expected_seq = 1
     prev_ts: int | None = None
+    kb = key_bytes(signing_key)
     with open(path, encoding="utf-8") as fh:
         for lineno, raw in enumerate(fh, start=1):
             line = raw.rstrip("\n")
@@ -204,6 +273,12 @@ def verify_chain(path: str) -> dict[str, Any]:
                 return {"ok": False, "first_bad": event_id, "reason": "gapless event_id broken"}
             if event.get("prev_hash") != prev_hash:
                 return {"ok": False, "first_bad": event_id, "reason": "prev_hash mismatch"}
+            if kb is not None:
+                expected_sig = hmac.new(
+                    kb, prev_hash.encode(), hashlib.sha256
+                ).hexdigest()
+                if event.get("sig") != expected_sig:
+                    return {"ok": False, "first_bad": event_id, "reason": "signature mismatch"}
             ts = event.get("ts_virtual")
             if prev_ts is not None and ts < prev_ts:
                 return {"ok": False, "first_bad": event_id, "reason": "ts_virtual decreased"}

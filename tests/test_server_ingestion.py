@@ -178,3 +178,71 @@ def test_stdlib_and_fastapi_expose_the_same_read_routes():
     pytest.importorskip("fastapi")
     paths = {route.path for route in create_fastapi_app().routes}
     assert {"/v1/runs/{run_id}/evaluation", "/v1/reliability/{project}"} <= paths
+
+
+def test_sqlite_restart_persistence_and_duplicate_replay(tmp_path):
+    from agentcrash.server import SQLiteStorage, serve
+
+    db_path = tmp_path / "nested" / "control_plane.db"  # Also tests first-run dir creation
+    store1 = SQLiteStorage(db_path)
+    server1, port1 = serve(port=0, storage=store1)
+    t1 = threading.Thread(target=server1.serve_forever, daemon=True)
+    t1.start()
+    try:
+        # Register project & ingest run on server1
+        _post(port1, "/v1/projects", {"project": "restart-agent"})
+        ac = AgentCrash(WorkflowConfig(project="restart-agent"))
+        with ac.run(name="task") as run:
+            with run.step("s1"):
+                pass
+            with run.step("s2"):
+                pass
+        events = list(ac.traces[run.run_id])
+        res1 = _post(port1, "/v1/events", {"events": events})
+        assert res1["accepted"] == len(events)
+        assert res1["duplicate"] == 0
+
+        # Submit evaluation on server1
+        eval_res = _post(
+            port1,
+            "/v1/evaluations",
+            {"run_id": run.run_id, "results": [{"id": "inv1", "passed": True, "evidence": "good"}]},
+        )
+        assert eval_res["verdict"] == "PASS"
+
+        detail1 = _get(port1, f"/v1/runs/{run.run_id}")
+        assert detail1["project"] == "restart-agent"
+        assert len(detail1["events"]) == len(events)
+    finally:
+        server1.shutdown()
+        server1.server_close()
+        store1.close()
+
+    # Now restart server pointing to the SAME SQLite file:
+    store2 = SQLiteStorage(db_path)
+    server2, port2 = serve(port=0, storage=store2)
+    t2 = threading.Thread(target=server2.serve_forever, daemon=True)
+    t2.start()
+    try:
+        # Verify all state survived restart
+        detail2 = _get(port2, f"/v1/runs/{run.run_id}")
+        assert detail2["project"] == "restart-agent"
+        assert len(detail2["events"]) == len(events)
+        assert [e["seq"] for e in detail2["events"]] == [e["seq"] for e in events]
+        assert detail2["evaluation"][0]["id"] == "inv1"
+
+        summary = _get(port2, f"/v1/runs/{run.run_id}/evaluation")
+        assert summary["verdict"] == "PASS"
+
+        rel = _get(port2, "/v1/reliability/restart-agent")
+        assert rel["runs"] == 1
+
+        # Replay duplicate events: verify deduplication survived restart
+        res2 = _post(port2, "/v1/events", {"events": events})
+        assert res2["accepted"] == 0
+        assert res2["duplicate"] == len(events)
+    finally:
+        server2.shutdown()
+        server2.server_close()
+        store2.close()
+

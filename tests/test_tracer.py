@@ -123,3 +123,41 @@ def test_detail_truncation_marker(tmp_path) -> None:
 def test_compute_run_id_matches_authority_rule() -> None:
     want = hashlib.sha256(b"scenpol42").hexdigest()[:16]
     assert compute_run_id("scen", "pol", 42) == want
+
+
+def test_luhn_rejects_numeric_ids_and_accepts_valid_cards() -> None:
+    from agentcrash.tracer import REDACTED_CARD, redact
+
+    # 16-digit order ID that fails Luhn checksum
+    order_id = "1234567890123456"
+    assert redact({"order": order_id})["order"] == order_id
+
+    # Valid cards that pass Luhn checksum
+    valid_card = "4242424242424242"
+    assert redact({"card": valid_card})["card"] == REDACTED_CARD
+    valid_card_spaced = "4111 1111 1111 1111"
+    assert redact({"card": valid_card_spaced})["card"] == REDACTED_CARD
+
+
+def test_jwt_and_cloud_token_redaction() -> None:
+    from agentcrash.tracer import REDACTED, redact
+
+    jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
+        "G3jPsmHQyGz_gqXJ1eP4Rkm4g6r_v2kCpxGq8HnC6uU"
+    )
+    res = redact({"session": f"Bearer {jwt}"})
+    assert jwt not in res["session"]
+    assert REDACTED in res["session"]
+
+    cloud_key = "sk-proj-1234567890abcdef1234567890"
+    res_cloud = redact({"api": f"Bearer {cloud_key}"})
+    assert cloud_key not in res_cloud["api"]
+    assert REDACTED in res_cloud["api"]
+
+    ghp_token = "ghp_123456789012345678901234567890123456"
+    res_ghp = redact({"gh": ghp_token})
+    assert ghp_token not in res_ghp["gh"]
+    assert REDACTED in res_ghp["gh"]
+

@@ -13,10 +13,14 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from agentcrash.tracer import REDACTED_CARD, REDACTED_EMAIL
+from agentcrash.tracer import REDACTED, REDACTED_CARD, REDACTED_EMAIL, _luhn_checksum
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 CARD_RE = re.compile(r"\b\d(?:[ \-]?\d){12,18}\b")
+JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+CLOUD_TOKEN_RE = re.compile(
+    r"\b(?:(?:sk|pk|glpat|xoxb|xoxp)[-_]|(?:ghp|gho)_|AKIA|ASIA|ya29)[-_A-Za-z0-9]{8,}\b"
+)
 
 
 @dataclass(frozen=True)
@@ -31,8 +35,10 @@ class PiiHit:
 def _is_placeholder(kind: str, text: str) -> bool:
     if kind == "email":
         return text == REDACTED_EMAIL
-    digits = re.sub(r"[ \-]", "", text)
-    return digits == REDACTED_CARD
+    if kind == "card":
+        digits = re.sub(r"[ \-]", "", text)
+        return digits == REDACTED_CARD
+    return text == REDACTED
 
 
 def scan_text(text: str, label: str) -> list[PiiHit]:
@@ -43,8 +49,14 @@ def scan_text(text: str, label: str) -> list[PiiHit]:
             if not _is_placeholder("email", match.group(0)):
                 hits.append(PiiHit(f"{label}:{lineno}", "email", match.group(0)))
         for match in CARD_RE.finditer(line):
-            if not _is_placeholder("card", match.group(0)):
+            if not _is_placeholder("card", match.group(0)) and _luhn_checksum(match.group(0)):
                 hits.append(PiiHit(f"{label}:{lineno}", "card", match.group(0)))
+        for match in JWT_RE.finditer(line):
+            if not _is_placeholder("jwt", match.group(0)):
+                hits.append(PiiHit(f"{label}:{lineno}", "jwt", match.group(0)))
+        for match in CLOUD_TOKEN_RE.finditer(line):
+            if not _is_placeholder("token", match.group(0)):
+                hits.append(PiiHit(f"{label}:{lineno}", "token", match.group(0)))
     return hits
 
 

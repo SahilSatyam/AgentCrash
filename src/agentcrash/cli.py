@@ -135,15 +135,19 @@ def register_builtin_invariants(requested: list[str]) -> None:
                 register_verifier(FreshWriteOnly(tools, id=invariant_id))
 
 
-def verify_trace_chain(trace_path: Path, events: list[dict[str, Any]]) -> dict[str, Any]:
+def verify_trace_chain(
+    trace_path: Path,
+    events: list[dict[str, Any]],
+    signing_key: str | bytes | None = None,
+) -> dict[str, Any]:
     """Verify the hash chain of an SDK trace or a ``TraceWriter`` file."""
     if all("seq" in event and "kind" in event for event in events):
         from agentcrash.sdk import verify_sdk_chain
 
-        return verify_sdk_chain(events)
+        return verify_sdk_chain(events, signing_key=signing_key)
     from agentcrash.tracer import verify_chain
 
-    return verify_chain(str(trace_path))
+    return verify_chain(str(trace_path), signing_key=signing_key)
 
 
 def cmd_check(argv: list[str]) -> int:
@@ -171,6 +175,28 @@ def cmd_check(argv: list[str]) -> int:
         action="store_true",
         help="verify the trace's hash chain (SDK run or TraceWriter file) "
         "before judging; a broken chain exits 3",
+    )
+    parser.add_argument(
+        "--signing-key",
+        default=None,
+        help="HMAC-SHA256 key to verify signed trace chains",
+    )
+    parser.add_argument(
+        "--fuzz",
+        action="store_true",
+        help="fuzz fault schedules against the trace to discover invariant violations",
+    )
+    parser.add_argument(
+        "--max-cases",
+        type=int,
+        default=20,
+        help="maximum number of fault schedule combinations to fuzz (default: 20)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="random seed for schedule fuzzing (default: 42)",
     )
     parser.add_argument(
         "--scan-pii",
@@ -217,8 +243,8 @@ def cmd_check(argv: list[str]) -> int:
         emit(f"trace {trace_path} is corrupt: {exc}")
         return fail("E_TRACE_CORRUPT", str(exc), EXIT_CORRUPT)
 
-    if args.verify_chain:
-        chain = verify_trace_chain(trace_path, events)
+    if args.verify_chain or args.signing_key:
+        chain = verify_trace_chain(trace_path, events, signing_key=args.signing_key)
         if not chain["ok"]:
             emit(f"trace {trace_path} chain broken at {chain['first_bad']}: {chain['reason']}")
             return fail(
@@ -274,6 +300,49 @@ def cmd_check(argv: list[str]) -> int:
                 EXIT_VERDICT_FAIL,
             )
         emit(f"PII scan: clean ({', '.join(targets)})")
+
+    if args.fuzz:
+        from agentcrash.evaluate import fuzz_and_shrink, simulate_trace_faults
+        from agentcrash.verifiers import get_verifier
+
+        invariants = [get_verifier(inv_id) for inv_id in args.invariant]
+        boundaries = sorted({e.get("tool") for e in events if e.get("tool")})
+        if not boundaries:
+            boundaries = sorted({e.get("step") for e in events if e.get("step")})
+
+        def runner_fn(
+            sched: dict[str, dict[str, Any]],
+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            return simulate_trace_faults(events, sched)
+
+        fuzz_res = fuzz_and_shrink(
+            runner_fn,
+            invariants,
+            boundaries=boundaries,
+            seed=args.seed,
+            max_cases=args.max_cases,
+        )
+        if fuzz_res["failed"]:
+            emit(
+                f"fuzz: invariant failure found at seed {args.seed} (case {fuzz_res['cases_tested']})"
+            )
+            emit(
+                f"fuzz: minimal schedule: {json.dumps(fuzz_res['minimal_schedule'], sort_keys=True)}"
+            )
+            fuzz_report = fuzz_res["report"]
+            fuzz_report["run_id"] = run_id
+            Path(report_out).write_text(
+                json.dumps(fuzz_report, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+            )
+            for row in fuzz_report.get("results", []):
+                mark = "PASS" if row.get("passed") else "FAIL"
+                verb = "satisfied" if row.get("passed") else "violated!"
+                emit(f"[{mark}] Invariant {row.get('id')} {verb} ({row.get('evidence')})")
+            emit(f"verdict={fuzz_report['verdict']} report={report_out}")
+            if as_json:
+                print(json.dumps(fuzz_report, sort_keys=True, indent=2))
+            return EXIT_VERDICT_FAIL
+        emit(f"fuzz: clean — {fuzz_res['cases_tested']} schedule combinations verified")
 
     for row in report["results"]:
         mark = "PASS" if row["passed"] else "FAIL"

@@ -19,9 +19,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import hmac
 import json
 import os
 import threading
+import time
 import urllib.request
 from collections import deque
 from collections.abc import Callable
@@ -30,7 +32,7 @@ from typing import Any, Self
 from uuid import uuid4
 
 from agentcrash.events import make_event
-from agentcrash.tracer import redact
+from agentcrash.tracer import key_bytes, redact
 
 #: Built once: ``json.dumps(..., sort_keys=True)`` builds a new encoder per
 #: call. Same output format, so existing chains still verify.
@@ -52,6 +54,7 @@ class WorkflowConfig:
     api_key: str | None = None
     max_queue: int = 1000
     seed: int | None = None
+    signing_key: str | bytes | None = None
 
 
 @dataclass
@@ -67,13 +70,37 @@ class FaultPolicy:
     faults: dict[str, dict[str, Any]] = field(default_factory=dict)
     seed: int | None = None
 
+    def __post_init__(self) -> None:
+        import random
+
+        self._rng = random.Random(self.seed) if self.seed is not None else None
+
+    @classmethod
+    def from_scenario(cls, scenario: dict[str, Any]) -> FaultPolicy:
+        """Build FaultPolicy from scenario mapping containing a 'faults' list."""
+        faults_map: dict[str, dict[str, Any]] = {}
+        seed = scenario.get("seed")
+        for f in scenario.get("faults", []):
+            if isinstance(f, dict):
+                params = dict(f.get("params") or {})
+                tool = params.get("tool") or f.get("boundary")
+                if tool:
+                    faults_map[tool] = {"kind": f.get("kind"), **params}
+        return cls(faults=faults_map, seed=seed)
+
     def should_fire(self, boundary: str, call_index: int = 1) -> dict[str, Any] | None:
         """Return the fault descriptor if it fires here, else None."""
         spec = self.faults.get(boundary)
         if not spec:
             return None
-        want = int(spec.get("occurrence", 1))
-        if call_index != want:
+        want = spec.get("occurrence", 1)
+        if want == "all":
+            return dict(spec)
+        try:
+            want_int = int(want)
+        except (ValueError, TypeError):
+            return None
+        if call_index != want_int:
             return None
         return dict(spec)
 
@@ -81,8 +108,9 @@ class FaultPolicy:
 class _Exporter:
     """Bounded, non-blocking event exporter with graceful degradation.
 
-    No network I/O happens per step: events batch in memory and flush
-    only when the batch threshold is reached or the run ends.
+    Events batch in memory and are sent by a background daemon worker
+    thread when an endpoint is configured. Network failures are swallowed
+    and counted, never raised into host code.
     """
 
     BATCH_SIZE = 50
@@ -93,52 +121,58 @@ class _Exporter:
         self._max = config.max_queue if config.max_queue > 0 else None
         self._buf: deque[dict[str, Any]] = deque()
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._send_lock = threading.Lock()
         self.dropped = 0
         self.sent = 0
         self.failed = 0
+        self._in_flight = 0
+        self._stop_event = threading.Event()
+        self._worker: threading.Thread | None = None
+        if self._config.enabled and self._config.endpoint:
+            self._start_worker()
+
+    def _start_worker(self) -> None:
+        with self._lock:
+            if self._worker is None or not self._worker.is_alive():
+                self._stop_event.clear()
+                self._worker = threading.Thread(
+                    target=self._worker_loop,
+                    daemon=True,
+                    name="agentcrash-exporter",
+                )
+                self._worker.start()
+
+    @property
+    def queued(self) -> int:
+        """Number of events currently waiting in the in-memory buffer."""
+        with self._lock:
+            return len(self._buf)
+
+    @property
+    def in_flight(self) -> int:
+        """Number of events currently detached from buffer and transmitting over HTTP."""
+        with self._lock:
+            return self._in_flight
 
     def emit(self, event: dict[str, Any]) -> bool:
-        """Enqueue, dropping the oldest when full; never raises, never blocks.
-
-        Duplicate ``event_id`` values are not filtered here (the SDK never
-        emits one twice, and the server dedupes on ingestion), so memory
-        stays bounded by ``max_queue``.
-        """
-        with self._lock:
+        """Enqueue, dropping the oldest when full; never raises, never blocks."""
+        with self._cond:
             if self._max is not None and len(self._buf) >= self._max:
                 self._buf.popleft()
                 self.dropped += 1
             self._buf.append(event)
-            flush_now = bool(self._config.endpoint) and len(self._buf) >= self.BATCH_SIZE
-        if flush_now:
-            self._flush_best_effort()
+            if self._config.endpoint and len(self._buf) >= self.BATCH_SIZE:
+                self._cond.notify()
+        if self._config.endpoint and (self._worker is None or not self._worker.is_alive()):
+            self._start_worker()
         return True
 
-    def flush(self) -> None:
-        """Push one batch to the endpoint, if configured. Never raises."""
-        if not self._config.enabled:
-            return
-        try:
-            self._flush_best_effort()
-        except Exception:  # noqa: BLE001 -- flush must never break the host
-            self.failed += 1
-
-    def drain(self) -> list[dict[str, Any]]:
-        """Remove and return all buffered events (local capture path)."""
-        with self._lock:
-            items = list(self._buf)
-            self._buf.clear()
-        return items
-
-    def _flush_best_effort(self) -> None:
+    def _send_batch(self, batch: list[dict[str, Any]]) -> bool:
+        """Send a single batch to the endpoint. Caller must NOT hold self._lock."""
         endpoint = self._config.endpoint
         if not endpoint:
-            return
-        with self._lock:
-            n = min(self.BATCH_SIZE, len(self._buf))
-            batch = [self._buf.popleft() for _ in range(n)]
-        if not batch:
-            return
+            return False
         try:
             body = json.dumps({"events": batch}).encode()
             req = urllib.request.Request(
@@ -149,16 +183,107 @@ class _Exporter:
             if self._config.api_key:
                 req.add_header("Authorization", f"Bearer {self._config.api_key}")
             with urllib.request.urlopen(req, timeout=2):
+                pass
+            with self._lock:
                 self.sent += len(batch)
-        # Best-effort flush: network failures are counted, never raised.
+            return True
         except Exception:  # noqa: BLE001 -- graceful degradation by design
-            self.failed += len(batch)
-            with self._lock:  # requeue at the front, in order, best-effort
+            with self._lock:
+                self.failed += len(batch)
                 for event in reversed(batch):
                     if self._max is not None and len(self._buf) >= self._max:
                         self.dropped += 1
                         continue
                     self._buf.appendleft(event)
+            return False
+
+    def _pop_and_send_batch(self, max_batch: int | None = None) -> bool | None:
+        """Pop up to batch_size events and send them.
+
+        Returns True on send success, False on network failure, or None when
+        the buffer was empty. Manages _in_flight counter and condition notifications.
+        """
+        limit = max_batch or self.BATCH_SIZE
+        with self._cond:
+            if not self._buf:
+                return None
+            n = min(limit, len(self._buf))
+            batch = [self._buf.popleft() for _ in range(n)]
+            self._in_flight += len(batch)
+        try:
+            with self._send_lock:
+                return self._send_batch(batch)
+        finally:
+            with self._cond:
+                self._in_flight -= len(batch)
+                self._cond.notify_all()
+
+    def _worker_loop(self) -> None:
+        """Background daemon thread to export batches without stalling caller."""
+        while not self._stop_event.is_set():
+            with self._cond:
+                while not self._stop_event.is_set() and len(self._buf) < self.BATCH_SIZE:
+                    self._cond.wait(timeout=0.2)
+                if self._stop_event.is_set() and not self._buf:
+                    break
+                if len(self._buf) < self.BATCH_SIZE:
+                    continue
+            self._pop_and_send_batch()
+
+    def _flush_best_effort(self) -> None:
+        """Push up to BATCH_SIZE events to the endpoint. Never raises."""
+        if not self._config.enabled or not self._config.endpoint:
+            return
+        self._pop_and_send_batch()
+
+    def flush(self, timeout: float | None = 5.0) -> None:
+        """Loop-until-empty with a configurable shutdown deadline. Never raises.
+
+        Flush is best-effort: it loops until all buffered events are drained and
+        all in-flight network sends conclude, or until the deadline expires.
+        If an HTTP send fails, the batch is returned to the queue, the failure is
+        recorded in counters, and flush terminates early to avoid stalling callers
+        on dead endpoints.
+        """
+        if not self._config.enabled or not self._config.endpoint:
+            return
+        deadline = time.time() + (timeout if timeout is not None else 5.0)
+        while time.time() < deadline:
+            with self._cond:
+                if not self._buf and self._in_flight == 0:
+                    break
+                if not self._buf:
+                    # Wait for in-flight worker to finish
+                    self._cond.wait(timeout=0.1)
+                    continue
+            ok = self._pop_and_send_batch()
+            if ok is False:
+                # On failure, do not spin repeatedly; abort this flush pass.
+                break
+
+    def drain(self) -> list[dict[str, Any]]:
+        """Remove and return all buffered events (local capture path).
+
+        Clears the in-memory buffer (`queued`). Note that any events already
+        `in_flight` (being transmitted by the background worker) are not returned.
+        """
+        with self._lock:
+            items = list(self._buf)
+            self._buf.clear()
+        return items
+
+    def close(self, timeout: float = 2.5) -> None:
+        """Stop background worker.
+
+        Signals the worker thread to stop and waits up to ``timeout`` seconds for
+        any in-flight socket request (HTTP socket timeout is 2.0s) to finish.
+        The worker thread is a daemon thread, guaranteeing no thread leaks on shutdown.
+        """
+        self._stop_event.set()
+        with self._cond:
+            self._cond.notify_all()
+        if self._worker is not None and self._worker.is_alive():
+            self._worker.join(timeout=timeout)
 
 
 class _StepContext:
@@ -246,6 +371,42 @@ class RunContext:
         self._sdk._record(self, kind="fault", step=boundary, status="ok", fault=fault)
         return fault
 
+    def intercept_output(self, tool: str, output: Any, call_index: int | None = None) -> Any:
+        """Intercept tool outputs to inject active faults (poisoned_doc, concurrent_update)."""
+        fault = self.maybe_fault(tool, call_index=call_index)
+        if not fault:
+            return output
+        kind = fault.get("kind")
+        if kind == "poisoned_doc":
+            payload = (
+                fault.get("payload")
+                or fault.get("doc_id")
+                or fault.get("fixture_key")
+                or "[INJECTED_INSTRUCTION]"
+            )
+            if isinstance(output, dict):
+                output = dict(output)
+                if "text" in output:
+                    output["text"] = payload
+                elif "content" in output:
+                    output["content"] = payload
+                else:
+                    output["payload"] = payload
+                output["poisoned"] = True
+                return output
+            return payload
+        elif kind == "concurrent_update":
+            if isinstance(output, dict):
+                output = dict(output)
+                updates = fault.get("updates", {})
+                if isinstance(updates, dict):
+                    output.update(updates)
+                if "version" in output:
+                    output["version"] = int(output["version"]) + 1
+                    output["conflict"] = True
+                return output
+        return output
+
 
 class AgentCrash:
     """Installable reliability SDK. Observes; never orchestrates."""
@@ -269,6 +430,14 @@ class AgentCrash:
     def configure_faults(self, faults: dict[str, dict[str, Any]]) -> None:
         """Set deterministic fault descriptors per boundary."""
         self.faults = FaultPolicy(faults=faults, seed=self.config.seed)
+
+    def configure_faults_from_scenario(self, scenario: dict[str, Any]) -> None:
+        """Configure fault injection from a scenario mapping."""
+        self.faults = FaultPolicy.from_scenario(scenario)
+
+    def close(self) -> None:
+        """Close the SDK and stop the background exporter worker."""
+        self.exporter.close()
 
     # -- integration APIs ----------------------------------------------
     def workflow(self, name: str | None = None) -> Callable:
@@ -388,6 +557,12 @@ class AgentCrash:
         digest = _chain_hash(run._prev_hash, line)
         run._prev_hash = digest
         event["prev_hash"] = digest
+        kb = key_bytes(self.config.signing_key)
+        if kb is not None:
+            # Note: SDK signs the new digest (incorporating current event line).
+            event["sig"] = hmac.new(
+                kb, digest.encode(), hashlib.sha256
+            ).hexdigest()
         self.traces.setdefault(run.run_id, []).append(event)
         return event
 
@@ -400,18 +575,22 @@ def _chain_hash(prev: str, line: str) -> str:
     return hashlib.sha256(f"{prev}:{line}".encode()).hexdigest()
 
 
-def verify_sdk_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
+def verify_sdk_chain(
+    events: list[dict[str, Any]],
+    signing_key: str | bytes | None = None,
+) -> dict[str, Any]:
     """Verify one run's SDK events on their own.
 
     Checks, in ``seq`` order: a single ``run_id``, gapless ``seq`` from 1,
     and the ``prev_hash`` chain, where each event's ``prev_hash`` is
     ``sha256(<previous value>:<canonical JSON of the event without
-    prev_hash>)`` starting from ``GENESIS``. Works on events loaded from
-    JSONL. Returns ``{"ok": True, "first_bad": None, "reason": None,
-    "events": n}`` or names the first bad event.
+    prev_hash>)`` starting from ``GENESIS``. When ``signing_key`` is supplied,
+    verifies HMAC-SHA256 signatures stored in ``sig``.
 
-    Integrity signal for accidental loss or reordering, not tamper proof:
-    there is no signing key.
+    .. note:: Signing Split
+       SDK events sign the newly computed event digest (incorporating the event's
+       canonical payload), while TraceWriter signs the old ``prev_hash``.
+       Each verification function matches its respective writer format.
     """
     if not events:
         return {"ok": False, "first_bad": None, "reason": "no events", "events": 0}
@@ -423,13 +602,14 @@ def verify_sdk_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
             "reason": f"trace mixes {len(run_ids)} runs; verify one run at a time",
             "events": len(events),
         }
+    kb = key_bytes(signing_key)
     prev = GENESIS
     ordered = sorted(events, key=lambda e: e.get("seq") if isinstance(e.get("seq"), int) else -1)
     for expected, event in enumerate(ordered, start=1):
         event_id = event.get("event_id")
         if event.get("seq") != expected:
             return {"ok": False, "first_bad": event_id, "reason": "seq gap", "events": len(events)}
-        body = {key: value for key, value in event.items() if key != "prev_hash"}
+        body = {key: value for key, value in event.items() if key not in ("prev_hash", "sig")}
         prev = _chain_hash(prev, _HASH_ENCODER.encode(body))
         if event.get("prev_hash") != prev:
             return {
@@ -438,4 +618,161 @@ def verify_sdk_chain(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "reason": "prev_hash mismatch",
                 "events": len(events),
             }
+        if kb is not None:
+            expected_sig = hmac.new(
+                kb, prev.encode(), hashlib.sha256
+            ).hexdigest()
+            if event.get("sig") != expected_sig:
+                return {
+                    "ok": False,
+                    "first_bad": event_id,
+                    "reason": "signature mismatch",
+                    "events": len(events),
+                }
     return {"ok": True, "first_bad": None, "reason": None, "events": len(events)}
+
+
+def to_otel_spans(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map AgentCrash trace events to OpenTelemetry-compatible span dicts with W3C traceparent.
+
+    Zero dependency: produces pure dictionaries following OpenTelemetry semantic
+    conventions for AI agents, with deterministic trace_id and span_id derived
+    from run_id and sequence.
+
+    .. note:: Virtual Clock Semantics
+       ``ts_virtual`` travels as the span attribute ``agentcrash.ts_virtual``.
+       Spans receive provider wall-clock times; consumers should rely on
+       ``agentcrash.ts_virtual`` rather than span start/end wall-clock timestamps
+       for deterministic virtual duration analysis.
+    """
+    if not events:
+        return []
+    run_id = str(events[0].get("run_id", "default_run"))
+    trace_id = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:32]
+    spans: list[dict[str, Any]] = []
+
+    step_spans: dict[str, str] = {}
+    run_span_id = hashlib.sha256(f"{run_id}:root".encode()).hexdigest()[:16]
+
+    for i, event in enumerate(events, start=1):
+        seq = event.get("seq", i)
+        kind = event.get("kind", "info")
+        step = event.get("step")
+        tool = event.get("tool")
+        status = event.get("status", "ok")
+        error = event.get("error")
+        fault = event.get("fault")
+
+        span_id = hashlib.sha256(
+            f"{run_id}:{seq}:{kind}:{step}:{tool}".encode()
+        ).hexdigest()[:16]
+
+        if kind in ("step_start", "step_end") and step:
+            span_name = f"step:{step}"
+            parent_id = run_span_id
+            step_spans[step] = span_id
+        elif kind == "tool" or tool:
+            span_name = f"tool:{tool}" if tool else "tool"
+            parent_id = step_spans.get(step, run_span_id) if step else run_span_id
+        elif kind in ("run_start", "run_end"):
+            span_name = f"workflow:{event.get('workflow', 'run')}"
+            parent_id = None
+        elif kind == "fault":
+            span_name = f"fault:{fault.get('kind', 'unknown')}" if fault else "fault"
+            parent_id = step_spans.get(step, run_span_id) if step else run_span_id
+        else:
+            span_name = f"agentcrash:{kind}"
+            parent_id = run_span_id
+
+        traceparent = f"00-{trace_id}-{span_id}-01"
+
+        attributes: dict[str, Any] = {
+            "agentcrash.run_id": run_id,
+            "agentcrash.project": event.get("project", "default"),
+            "agentcrash.kind": kind,
+            "agentcrash.seq": seq,
+            "agentcrash.status": status,
+            "gen_ai.system": "agentcrash",
+        }
+        if step:
+            attributes["agentcrash.step"] = step
+        if tool:
+            attributes["agentcrash.tool"] = tool
+            attributes["gen_ai.tool.name"] = tool
+        if error:
+            attributes["agentcrash.error"] = str(error)
+        if fault and isinstance(fault, dict):
+            attributes["agentcrash.fault_kind"] = fault.get("kind", "unknown")
+        if "ts_virtual" in event:
+            attributes["agentcrash.ts_virtual"] = event["ts_virtual"]
+
+        status_obj = {
+            "code": "ERROR" if status == "error" or error else "OK",
+            "description": str(error or ""),
+        }
+
+        spans.append({
+            "name": span_name,
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "parent_span_id": parent_id,
+            "traceparent": traceparent,
+            "attributes": attributes,
+            "status": status_obj,
+        })
+
+    return spans
+
+
+def export_otel_spans(events: list[dict[str, Any]], tracer: Any = None) -> int:
+    """Export trace events to OpenTelemetry spans.
+
+    If ``tracer`` is None, lazily imports ``opentelemetry.trace`` and creates
+    spans. If OpenTelemetry is not installed, raises an informative ImportError.
+    Returns the count of exported spans.
+
+    .. note:: Virtual Clock Semantics
+       ``ts_virtual`` is passed as attribute ``agentcrash.ts_virtual``; span durations
+       reflect wall-clock time of the tracer provider.
+    """
+    spans_data = to_otel_spans(events)
+    if not spans_data:
+        return 0
+
+    if tracer is None:
+        try:
+            from opentelemetry import trace
+
+            tracer = trace.get_tracer("agentcrash")
+        except ImportError as exc:
+            raise ImportError(
+                "OpenTelemetry is not installed. Install with 'pip install agentcrash[otel]' "
+                "or pass an explicit tracer."
+            ) from exc
+
+    exported = 0
+    for span_data in spans_data:
+        if hasattr(tracer, "start_span"):
+            span = tracer.start_span(
+                span_data["name"],
+                attributes=span_data["attributes"],
+            )
+            if hasattr(span, "set_status") and span_data["status"]["code"] == "ERROR":
+                try:
+                    from opentelemetry.trace import Status, StatusCode
+
+                    span.set_status(Status(StatusCode.ERROR, span_data["status"]["description"]))
+                except (ImportError, AttributeError, TypeError, ValueError):
+                    pass
+            if hasattr(span, "end"):
+                span.end()
+            exported += 1
+        elif hasattr(tracer, "start_as_current_span"):
+            with tracer.start_as_current_span(
+                span_data["name"],
+                attributes=span_data["attributes"],
+            ):
+                exported += 1
+        else:
+            exported += 1
+    return exported

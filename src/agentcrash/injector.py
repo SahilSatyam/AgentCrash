@@ -75,14 +75,17 @@ FAULT_CATALOG: tuple[dict[str, object], ...] = (
     },
     {
         "kind": "poisoned_doc",
-        "description": "Injected instruction in a fixture document (inert marker; fixture bytes do the work).",
-        "effect": "documentation-only; the retrieved bytes carry the injection.",
-        "inline_supported": False,
-        "default_params": {},
+        "description": "Injected instruction in a fixture document or tool output.",
+        "effect": "replaces or injects payload into tool output; instructions steer the agent.",
+        "inline_supported": True,
+        "default_params": {"occurrence": 1},
         "params_schema": [
             {"name": "tool", "type": "string", "required": False},
+            {"name": "op", "type": "string", "required": False},
+            {"name": "occurrence", "type": "integer", "required": False, "default": 1},
             {"name": "doc_id", "type": "string", "required": False},
             {"name": "fixture_key", "type": "string", "required": False},
+            {"name": "payload", "type": "string", "required": False},
         ],
     },
 )
@@ -139,12 +142,23 @@ class FaultSchedule:
     deterministic.
     """
 
-    def __init__(self, faults: list[dict[str, Any]], rng: Any | None = None) -> None:
+    def __init__(
+        self,
+        faults: list[dict[str, Any]],
+        rng: Any | None = None,
+        seed: int | None = None,
+    ) -> None:
         self._faults = [dict(fault) for fault in faults]
         self._rng = rng
+        self.seed = seed
 
     @classmethod
-    def from_scenario(cls, scenario: dict[str, Any], rng: Any | None = None) -> FaultSchedule:
+    def from_scenario(
+        cls,
+        scenario: dict[str, Any],
+        rng: Any | None = None,
+        seed: int | None = None,
+    ) -> FaultSchedule:
         """Build a schedule, refusing unknown fault kinds (FR-07/FR-08)."""
         faults = scenario.get("faults", [])
         if not isinstance(faults, list):
@@ -157,21 +171,44 @@ class FaultSchedule:
                     f"{fault.get('at_step') if isinstance(fault, dict) else '?'}; "
                     f"known kinds: {', '.join(KNOWN_FAULT_KINDS)}"
                 )
-        return cls(faults, rng)
+        if seed is None and isinstance(scenario, dict):
+            seed = scenario.get("seed")
+        return cls(faults, rng, seed)
 
-    def fault_for(self, step: int, tool: str) -> dict[str, Any] | None:
-        """Return the fault firing at ``step`` for ``tool``, if any."""
+    def find_step_fault(
+        self, step: int, tool: str, kinds: set[str] | tuple[str, ...] | None = None
+    ) -> dict[str, Any] | None:
+        """Generic finder for step-based faults filtered by kind."""
         for fault in self._faults:
             if fault.get("at_step") != step:
+                continue
+            if kinds is not None and fault.get("kind") not in kinds:
                 continue
             params = fault.get("params", {}) or {}
             target = params.get("tool")
             if target is not None and target != tool:
                 continue
-            if fault.get("kind") not in TIMEOUT_KINDS:
-                continue
             return fault
         return None
+
+    def find_call_fault(
+        self,
+        tool: str,
+        op: str | None,
+        occurrence: int,
+        kinds: set[str] | tuple[str, ...] | None = None,
+    ) -> dict[str, Any] | None:
+        """Generic finder for occurrence-based call faults filtered by kind."""
+        for fault in self._faults:
+            if kinds is not None and fault.get("kind") not in kinds:
+                continue
+            if self._call_matches(fault, tool, op, occurrence):
+                return fault
+        return None
+
+    def fault_for(self, step: int, tool: str) -> dict[str, Any] | None:
+        """Return the fault firing at ``step`` for ``tool``, if any."""
+        return self.find_step_fault(step, tool, TIMEOUT_KINDS)
 
     @staticmethod
     def _call_matches(fault: dict[str, Any], tool: str, op: str | None, occurrence: int) -> bool:
@@ -186,16 +223,13 @@ class FaultSchedule:
         if want_op is not None and want_op != op:
             return False
         want_n = params.get("occurrence", 1)
+        if want_n == "all":
+            return True
         return want_n == occurrence
 
     def fault_for_call(self, tool: str, op: str | None, occurrence: int) -> dict[str, Any] | None:
         """Return the timeout fault firing on this tool call, if any."""
-        for fault in self._faults:
-            if fault.get("kind") not in TIMEOUT_KINDS:
-                continue
-            if self._call_matches(fault, tool, op, occurrence):
-                return fault
-        return None
+        return self.find_call_fault(tool, op, occurrence, TIMEOUT_KINDS)
 
     def concurrent_for(self, step: int, tool: str) -> dict[str, Any] | None:
         """Return the ``concurrent_update`` fault firing at ``step``, if any.
@@ -204,25 +238,20 @@ class FaultSchedule:
         the store (it never alters the tool result itself); the runner
         applies it before executing the agent's call at that step.
         """
-        for fault in self._faults:
-            if fault.get("at_step") != step:
-                continue
-            if fault.get("kind") != "concurrent_update":
-                continue
-            params = fault.get("params", {}) or {}
-            target = params.get("tool")
-            if target is not None and target != tool:
-                continue
-            return fault
-        return None
+        return self.find_step_fault(step, tool, {"concurrent_update"})
 
     def concurrent_for_call(
         self, tool: str, op: str | None, occurrence: int
     ) -> dict[str, Any] | None:
         """Return the rival-write fault firing before this tool call, if any."""
-        for fault in self._faults:
-            if fault.get("kind") != "concurrent_update":
-                continue
-            if self._call_matches(fault, tool, op, occurrence):
-                return fault
-        return None
+        return self.find_call_fault(tool, op, occurrence, {"concurrent_update"})
+
+    def poison_for(self, step: int, tool: str) -> dict[str, Any] | None:
+        """Return the ``poisoned_doc`` fault firing at ``step``, if any."""
+        return self.find_step_fault(step, tool, {"poisoned_doc"})
+
+    def poison_for_call(
+        self, tool: str, op: str | None, occurrence: int
+    ) -> dict[str, Any] | None:
+        """Return the poisoned-doc fault firing on this tool call, if any."""
+        return self.find_call_fault(tool, op, occurrence, {"poisoned_doc"})

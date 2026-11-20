@@ -136,3 +136,43 @@ def test_lab_static_and_evaluation_roundtrip():
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_lab_restart_persistence_and_runs_listing(tmp_path):
+    from agentcrash.server import SQLiteStorage, serve
+
+    db_path = tmp_path / "lab_persist.db"
+    store1 = SQLiteStorage(db_path)
+    server1, port1 = serve(port=0, storage=store1)
+    t1 = threading.Thread(target=server1.serve_forever, daemon=True)
+    t1.start()
+    try:
+        ac = AgentCrash(WorkflowConfig(project="lab-agent"))
+        with ac.run(name="r1") as r1:
+            pass
+        with ac.run(name="r2") as r2:
+            pass
+        _post(port1, "/v1/projects", {"project": "lab-agent"})
+        _post(port1, "/v1/events", {"events": list(ac.traces[r1.run_id])})
+        _post(port1, "/v1/events", {"events": list(ac.traces[r2.run_id])})
+    finally:
+        server1.shutdown()
+        server1.server_close()
+        store1.close()
+
+    # Restart
+    store2 = SQLiteStorage(db_path)
+    server2, port2 = serve(port=0, storage=store2)
+    t2 = threading.Thread(target=server2.serve_forever, daemon=True)
+    t2.start()
+    try:
+        body, ctype = _get(port2, "/")
+        assert ctype == "text/html" and b"AgentCrash Lab" in body
+        runs_resp = json.loads(_get(port2, "/v1/runs?project=lab-agent")[0].decode())
+        run_ids = {r["run_id"] for r in runs_resp["runs"]}
+        assert run_ids == {r1.run_id, r2.run_id}
+    finally:
+        server2.shutdown()
+        server2.server_close()
+        store2.close()
+
